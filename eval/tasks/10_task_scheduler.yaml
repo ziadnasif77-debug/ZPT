@@ -1,0 +1,12 @@
+name: task_scheduler
+description: "Build a task scheduler. Implement a class TaskScheduler that accepts tasks with priorities and dependencies. Each task has a name (str), priority (int, higher = more important), and a list of dependency task names. The method run_order() returns a list of task names in valid execution order: dependencies before dependents, higher priority first among tasks with satisfied dependencies. Raise ValueError for circular dependencies."
+acceptance_criteria:
+  - "Tasks with no dependencies are ordered by priority (highest first)"
+  - "A task with a dependency runs after its dependency"
+  - "Circular dependencies raise ValueError"
+  - "run_order() for a single task returns [task_name]"
+  - "run_order() for empty scheduler returns []"
+  - "Complex case: A(priority=1, deps=[]), B(priority=3, deps=['A']), C(priority=2, deps=[]) → run order starts with C or A (both valid before B), B comes last"
+  - "Exit code is 0"
+entry_point: "task_scheduler.py"
+difficulty: hard

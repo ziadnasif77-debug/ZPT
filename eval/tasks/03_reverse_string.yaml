@@ -1,0 +1,10 @@
+name: reverse_string
+description: "Write a function reverse_string(s) that reverses a string without using slicing (s[::-1]) or the built-in reversed()."
+acceptance_criteria:
+  - "reverse_string('hello') == 'olleh'"
+  - "reverse_string('') == ''"
+  - "reverse_string('a') == 'a'"
+  - "reverse_string('racecar') == 'racecar'"
+  - "Exit code is 0"
+entry_point: "reverse_string.py"
+difficulty: easy

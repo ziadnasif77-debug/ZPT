@@ -1,0 +1,11 @@
+name: calculator
+description: "Write a CLI calculator that reads an expression from command-line arguments (e.g., python calc.py '2 + 3') and prints the result. Support +, -, *, / operations on integers and floats. Handle division by zero gracefully by printing 'Error: division by zero'."
+acceptance_criteria:
+  - "python calc.py '2 + 3' prints '5' or '5.0'"
+  - "python calc.py '10 / 3' prints a float close to 3.333"
+  - "python calc.py '7 * 6' prints '42' or '42.0'"
+  - "python calc.py '10 - 15' prints '-5' or '-5.0'"
+  - "python calc.py '1 / 0' prints 'Error: division by zero'"
+  - "Exit code is 0 for valid expressions"
+entry_point: "calc.py"
+difficulty: medium

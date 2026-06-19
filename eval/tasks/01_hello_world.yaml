@@ -1,0 +1,7 @@
+name: hello_world
+description: "Write a Python script that prints 'Hello, World!' to stdout."
+acceptance_criteria:
+  - "Running 'python hello.py' prints exactly 'Hello, World!'"
+  - "Exit code is 0"
+entry_point: "hello.py"
+difficulty: trivial

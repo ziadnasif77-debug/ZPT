@@ -1,0 +1,10 @@
+name: word_frequency
+description: "Write a function word_freq(text) that returns a dictionary mapping each word (lowercased) to its count. Words are split by whitespace. Punctuation attached to words should be stripped (e.g., 'hello,' becomes 'hello')."
+acceptance_criteria:
+  - "word_freq('hello world hello') == {'hello': 2, 'world': 1}"
+  - "word_freq('The the THE') == {'the': 3}"
+  - "word_freq('Hello, world! Hello.') == {'hello': 2, 'world': 1}"
+  - "word_freq('') == {}"
+  - "Exit code is 0"
+entry_point: "word_freq.py"
+difficulty: medium

@@ -1,0 +1,11 @@
+name: flatten_list
+description: "Write a function flatten(lst) that takes an arbitrarily nested list and returns a flat list of all values. For example, flatten([1, [2, [3, 4], 5], 6]) returns [1, 2, 3, 4, 5, 6]."
+acceptance_criteria:
+  - "flatten([1, [2, [3, 4], 5], 6]) == [1, 2, 3, 4, 5, 6]"
+  - "flatten([]) == []"
+  - "flatten([1, 2, 3]) == [1, 2, 3]"
+  - "flatten([[[[1]]]]) == [1]"
+  - "flatten([1, 'hello', [2, [True]]]) == [1, 'hello', 2, True]"
+  - "Exit code is 0"
+entry_point: "flatten.py"
+difficulty: medium

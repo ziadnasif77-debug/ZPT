@@ -1,0 +1,11 @@
+name: fizzbuzz
+description: "Write a function fizzbuzz(n) that returns a list of strings for numbers 1 to n. For multiples of 3 use 'Fizz', multiples of 5 use 'Buzz', multiples of both use 'FizzBuzz', otherwise the number as a string."
+acceptance_criteria:
+  - "fizzbuzz(15) returns a list of 15 elements"
+  - "fizzbuzz(15)[2] == 'Fizz' (3 is multiple of 3)"
+  - "fizzbuzz(15)[4] == 'Buzz' (5 is multiple of 5)"
+  - "fizzbuzz(15)[14] == 'FizzBuzz' (15 is multiple of both)"
+  - "fizzbuzz(15)[0] == '1' (1 is neither)"
+  - "Exit code is 0"
+entry_point: "fizzbuzz.py"
+difficulty: easy

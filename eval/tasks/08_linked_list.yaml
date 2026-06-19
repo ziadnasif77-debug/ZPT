@@ -1,0 +1,13 @@
+name: linked_list
+description: "Implement a singly linked list with a Node class and a LinkedList class. LinkedList must support: append(value), prepend(value), delete(value), find(value) -> bool, to_list() -> list, and __len__."
+acceptance_criteria:
+  - "An empty LinkedList has length 0"
+  - "After append(1), append(2), append(3), to_list() returns [1, 2, 3]"
+  - "After prepend(0), to_list() starts with 0"
+  - "find(2) returns True for a list containing 2"
+  - "find(99) returns False for a list not containing 99"
+  - "delete(2) removes the node; to_list() no longer contains 2"
+  - "len() returns the correct count after operations"
+  - "Exit code is 0"
+entry_point: "linked_list.py"
+difficulty: medium

@@ -1,0 +1,10 @@
+name: csv_parser
+description: "Write a function parse_csv(text) that takes a CSV string (with header row) and returns a list of dictionaries. Each dict maps column headers to values. Handle quoted fields containing commas (e.g., '\"Smith, John\"' is a single field)."
+acceptance_criteria:
+  - "parse_csv('name,age\\nAlice,30\\nBob,25') returns [{'name':'Alice','age':'30'}, {'name':'Bob','age':'25'}]"
+  - "parse_csv('a,b\\n1,2') returns [{'a':'1','b':'2'}]"
+  - "Handles quoted fields: a field like '\"hello, world\"' is kept as 'hello, world'"
+  - "parse_csv('') returns [] or handles empty input gracefully"
+  - "Exit code is 0"
+entry_point: "csv_parser.py"
+difficulty: hard

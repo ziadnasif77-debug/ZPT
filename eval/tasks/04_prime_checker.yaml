@@ -1,0 +1,13 @@
+name: prime_checker
+description: "Write a function is_prime(n) that returns True if n is a prime number, False otherwise. Handle edge cases: n < 2 is not prime."
+acceptance_criteria:
+  - "is_prime(2) == True"
+  - "is_prime(3) == True"
+  - "is_prime(4) == False"
+  - "is_prime(17) == True"
+  - "is_prime(1) == False"
+  - "is_prime(0) == False"
+  - "is_prime(-5) == False"
+  - "Exit code is 0"
+entry_point: "prime_checker.py"
+difficulty: easy
