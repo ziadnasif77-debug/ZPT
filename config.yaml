@@ -1,0 +1,43 @@
+llm:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  timeout_seconds: 300
+  cache_enabled: true
+
+models:
+  default: "qwen3-coder:latest"
+
+agent_models:
+  architect: "default"
+  developer: "default"
+  tester: "default"
+  reviewer: "default"
+
+context:
+  max_tokens_per_model:
+    "qwen3-coder:latest": 32000
+  relevant_files_only: true
+  summarize_when_over_budget: true
+
+sandbox:
+  backend: "docker"
+  image: "python:3.11-slim"
+  cpu_limit: "1.0"
+  memory_limit: "512m"
+  timeout_seconds: 30
+  network: false
+  workspace_mount_readonly: false
+
+loop:
+  max_iterations: 5
+  stop_if_no_progress: true
+  pass_full_attempt_history: true
+
+human_in_the_loop:
+  approve_plan: true
+
+observability:
+  log_dir: "./logs"
+  log_every_call: true
+
+workspace_dir: "./workspace"
