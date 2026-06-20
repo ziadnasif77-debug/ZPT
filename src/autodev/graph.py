@@ -16,6 +16,7 @@ from autodev.deps import audit_dependencies, check_imports, pip_install_command,
 from autodev.import_fixer import fix_imports
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
+from autodev.syntax_fixer import fix_syntax
 
 if TYPE_CHECKING:
     from autodev.config import AppConfig
@@ -27,19 +28,28 @@ def _error_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _auto_fix_imports(workspace: Path) -> None:
-    """Scan all .py files in workspace and auto-fix missing imports."""
+def _auto_fix_code(workspace: Path) -> None:
+    """Scan all .py files in workspace, fix syntax errors and missing imports."""
     if not workspace.is_dir():
         return
     for py_file in workspace.glob("*.py"):
         try:
             source = py_file.read_text(encoding="utf-8")
-            fixed = fix_imports(source)
+            fixed = source
+
+            fixed = fix_syntax(fixed)
+            if fixed != source:
+                print(f"[SYNTAX-FIX] Auto-fixed syntax in {py_file.name}", flush=True)
+
+            after_imports = fix_imports(fixed)
+            if after_imports != fixed:
+                fixed = after_imports
+                print(f"[IMPORT-FIX] Auto-fixed imports in {py_file.name}", flush=True)
+
             if fixed != source:
                 py_file.write_text(fixed, encoding="utf-8")
-                print(f"[IMPORT-FIX] Auto-fixed imports in {py_file.name}", flush=True)
         except Exception as exc:
-            print(f"[IMPORT-FIX] Error fixing {py_file.name}: {exc}", flush=True)
+            print(f"[CODE-FIX] Error fixing {py_file.name}: {exc}", flush=True)
 
 
 def build_graph(
@@ -72,7 +82,7 @@ def build_graph(
     def developer_node(state: AutodevState) -> dict:
         result = developer.run(state, config, llm)
         workspace = Path(state.get("workspace_path", "./workspace"))
-        _auto_fix_imports(workspace)
+        _auto_fix_code(workspace)
         return result
 
     # ── Tester ─────────────────────────────────────────────────
@@ -80,7 +90,7 @@ def build_graph(
         tester_result = tester.run(state, config, llm)
 
         workspace = Path(state.get("workspace_path", "./workspace"))
-        _auto_fix_imports(workspace)
+        _auto_fix_code(workspace)
 
         if sandbox is None:
             return tester_result
