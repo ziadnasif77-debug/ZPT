@@ -13,6 +13,7 @@ from langgraph.types import Command, interrupt
 from autodev.agents import architect, developer, reviewer, tester
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
+from autodev.diagnostics import check_api_mismatch, diagnose_traceback
 from autodev.import_fixer import fix_imports
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
@@ -50,6 +51,64 @@ def _auto_fix_code(workspace: Path) -> None:
                 py_file.write_text(fixed, encoding="utf-8")
         except Exception as exc:
             print(f"[CODE-FIX] Error fixing {py_file.name}: {exc}", flush=True)
+
+
+def _read_py_files(workspace: Path) -> dict[str, str]:
+    """Read all .py files in workspace into {filename: source}."""
+    files: dict[str, str] = {}
+    if not workspace.is_dir():
+        return files
+    for py_file in workspace.glob("*.py"):
+        try:
+            files[py_file.name] = py_file.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    return files
+
+
+def _preflight_validate(workspace: Path) -> dict | None:
+    """Statically validate code before the sandbox runs.
+
+    Returns a synthetic failing TestResult dict if a problem is found that the
+    sandbox would only rediscover at runtime, or None if everything looks sane.
+    This saves a full sandbox round-trip and yields precise feedback.
+    """
+    import ast as _ast
+
+    files = _read_py_files(workspace)
+    if not files:
+        return None
+
+    # 1. Syntax must be valid in every file (syntax_fixer ran already).
+    for name, source in files.items():
+        try:
+            _ast.parse(source)
+        except SyntaxError as exc:
+            return {
+                "passed": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f'File "{name}", line {exc.lineno}\nSyntaxError: {exc.msg}',
+                "test_summary": "pre-flight: syntax error",
+                "duration_seconds": 0.0,
+            }
+
+    # 2. The test must only import names the code actually defines.
+    test_source = files.get("test_runner.py", "")
+    code_files = {n: s for n, s in files.items() if n != "test_runner.py"}
+    if test_source and code_files:
+        mismatches = check_api_mismatch(code_files, test_source)
+        if mismatches:
+            return {
+                "passed": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "API mismatch between code and test:\n" + "\n".join(mismatches),
+                "test_summary": "pre-flight: API mismatch",
+                "duration_seconds": 0.0,
+            }
+
+    return None
 
 
 def build_graph(
@@ -92,6 +151,12 @@ def build_graph(
         workspace = Path(state.get("workspace_path", "./workspace"))
         _auto_fix_code(workspace)
 
+        # Pre-flight static validation — catch errors WITHOUT a sandbox run.
+        preflight = _preflight_validate(workspace)
+        if preflight is not None:
+            print(f"[PREFLIGHT] {preflight['stderr'][:200]}", flush=True)
+            return {"test_result": preflight}
+
         if sandbox is None:
             return tester_result
         audit = audit_dependencies(workspace)
@@ -129,10 +194,25 @@ def build_graph(
         iteration = state.get("iteration", 0)
 
         feedback_parts: list[str] = []
+        workspace = Path(state.get("workspace_path", "./workspace"))
+        code_files = _read_py_files(workspace)
 
         if not test_result.get("passed", False):
             stderr = test_result.get("stderr", "")
             stdout = test_result.get("stdout", "")
+
+            # Deterministic diagnosis — trust the actual traceback over guesses.
+            diag = diagnose_traceback(stderr, stdout, code_files)
+            if diag.confident and diag.message:
+                print(f"[DIAGNOSE] {diag.error_type} -> {diag.culprit}: {diag.message[:120]}", flush=True)
+                feedback_parts.append(f"DIAGNOSIS ({diag.error_type}): {diag.message}")
+                if diag.culprit == "tester":
+                    feedback_parts.append(
+                        "NOTE: This error is in the TEST script (test_runner.py), which the "
+                        "Tester regenerates. The implementation code may be correct — focus "
+                        "on making the implementation robust and well-structured."
+                    )
+
             feedback_parts.append(f"Test FAILED (exit code {test_result.get('exit_code', -1)})")
             if stderr:
                 feedback_parts.append(f"stderr:\n{stderr[:1500]}")

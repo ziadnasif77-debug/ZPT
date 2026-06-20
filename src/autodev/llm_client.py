@@ -54,6 +54,7 @@ class LLMClient:
         model: str,
         messages: list[dict],
         temperature: float,
+        response_format: dict | None = None,
     ) -> tuple[str, bool]:
         prompt_tokens = estimate_messages_tokens(messages)
 
@@ -76,13 +77,26 @@ class LLMClient:
         prompt_est = estimate_messages_tokens(messages)
         max_completion = min(_DEFAULT_MAX_COMPLETION_TOKENS, max(2048, budget - prompt_est))
 
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_completion,
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+
         t0 = time.perf_counter()
-        resp = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_completion,
-        )
+        try:
+            resp = self._client.chat.completions.create(**kwargs)
+        except Exception:
+            # Server rejected the structured-output request — retry without it
+            # so older Ollama builds still work (graceful degradation).
+            if response_format is not None:
+                kwargs.pop("response_format", None)
+                resp = self._client.chat.completions.create(**kwargs)
+            else:
+                raise
         latency_ms = (time.perf_counter() - t0) * 1000
         raw = resp.choices[0].message.content or ""
         completion_tokens = estimate_tokens(raw)
@@ -129,10 +143,13 @@ class LLMClient:
             return raw
 
         msgs = _inject_json_hint(messages)
+        response_format = _build_response_format(response_model)
         last_error: Exception | None = None
 
         for attempt in range(_MAX_PARSE_RETRIES + 1):
-            raw, truncated = self._call_llm(agent, model, msgs, temperature)
+            raw, truncated = self._call_llm(
+                agent, model, msgs, temperature, response_format=response_format
+            )
 
             try:
                 return _parse_model(raw, response_model)
@@ -149,6 +166,24 @@ class LLMClient:
             f"Failed to parse {response_model.__name__} after {_MAX_PARSE_RETRIES + 1} attempts. "
             f"Last error: {last_error}"
         )
+
+
+def _build_response_format(model_cls: Type[T]) -> dict:
+    """Build an OpenAI-compatible json_schema response_format from a Pydantic model.
+
+    Ollama (v0.5.0+) honors this via llama.cpp grammar-constrained decoding,
+    forcing the model to emit JSON that matches the schema — eliminating most
+    parse failures at the source. If the server rejects it, _call_llm falls
+    back to an unconstrained call.
+    """
+    schema = model_cls.model_json_schema()
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": model_cls.__name__,
+            "schema": schema,
+        },
+    }
 
 
 def _inject_json_hint(messages: list[dict]) -> list[dict]:

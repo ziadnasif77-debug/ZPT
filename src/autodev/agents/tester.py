@@ -41,14 +41,42 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
 
     criteria_text = "\n".join(f"- {c}" for c in acceptance_criteria)
 
-    user_msg = (
-        f"## Code Under Test\n{files_desc}\n"
-        f"## Acceptance Criteria\n{criteria_text}"
-    )
+    # Tell the tester EXACTLY what names each module exposes, so it imports the
+    # real API instead of guessing — this kills the API-mismatch error class.
+    from autodev.diagnostics import extract_public_api
+
+    api_lines = []
+    for f in code_bundle.get("files", []):
+        path = f["path"]
+        if path.endswith(".py") and path != "test_runner.py":
+            mod = path[:-3]
+            names = sorted(extract_public_api(f["content"]))
+            api_lines.append(f"- from {mod} import {', '.join(names) if names else '(nothing defined)'}")
+    api_desc = "\n".join(api_lines)
+
+    user_parts = [
+        f"## Code Under Test\n{files_desc}",
+        f"## Acceptance Criteria\n{criteria_text}",
+    ]
+    if api_desc:
+        user_parts.append(
+            "## Available API (import ONLY these names — they are the exact "
+            f"public names defined in the code)\n{api_desc}"
+        )
+
+    feedback = state.get("feedback", "")
+    if feedback:
+        user_parts.append(
+            "## Previous Attempt Failed\n"
+            "The previous test run failed with the feedback below. If the failure "
+            "was in the test script itself, fix your test. Write a correct, "
+            "self-contained test that matches the actual API above.\n\n"
+            f"{feedback}"
+        )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_msg},
+        {"role": "user", "content": "\n\n".join(user_parts)},
     ]
 
     test_plan = llm.chat(agent="tester", messages=messages, response_model=TestPlan)
