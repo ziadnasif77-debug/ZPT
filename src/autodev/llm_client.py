@@ -162,6 +162,39 @@ def _append_retry_feedback(messages: list[dict], raw: str, error: Exception) -> 
     return msgs
 
 
+def _fix_triple_quotes(text: str) -> str:
+    """Replace Python-style triple-quoted strings with properly escaped JSON strings.
+
+    LLMs sometimes output: "content": \"""some code\nhere\"""
+    which is Python syntax, not valid JSON. Convert to: "content": "some code\\nhere"
+    """
+    result = []
+    i = 0
+    while i < len(text):
+        for quote in ('"""', "'''"):
+            if text[i:i+3] == quote:
+                end = text.find(quote, i + 3)
+                if end == -1:
+                    inner = text[i+3:]
+                    i = len(text)
+                else:
+                    inner = text[i+3:end]
+                    i = end + 3
+                escaped = inner.replace("\\", "\\\\")
+                escaped = escaped.replace('"', '\\"')
+                escaped = escaped.replace("\n", "\\n")
+                escaped = escaped.replace("\r", "\\r")
+                escaped = escaped.replace("\t", "\\t")
+                result.append('"')
+                result.append(escaped)
+                result.append('"')
+                break
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
+
+
 def _extract_json(raw: str) -> str:
     """Best-effort extraction of a JSON object from messy LLM output."""
     text = raw.strip()
@@ -175,6 +208,10 @@ def _extract_json(raw: str) -> str:
     fence_match = re.search(r"```(?:json|JSON)?\s*\n([\s\S]*?)\n\s*```", text)
     if fence_match:
         text = fence_match.group(1).strip()
+
+    # Fix Python triple-quoted strings before extracting braces
+    if '"""' in text or "'''" in text:
+        text = _fix_triple_quotes(text)
 
     # Strip any text before the first { and after the last }
     first_brace = text.find("{")
@@ -216,6 +253,16 @@ def _parse_model(raw: str, model_cls: Type[T]) -> T:
         return model_cls.model_validate(parsed)
     except Exception:
         pass
+
+    # Attempt 5: fix Python triple-quoted strings ("""...""" or '''...''') in JSON
+    if '"""' in cleaned or "'''" in cleaned:
+        try:
+            fixed = _fix_triple_quotes(cleaned)
+            fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
+            parsed = json.loads(fixed)
+            return model_cls.model_validate(parsed)
+        except Exception:
+            pass
 
     raise JSONParseError(
         f"Cannot parse LLM response as {model_cls.__name__}.\n"
