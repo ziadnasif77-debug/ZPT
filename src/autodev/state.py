@@ -24,4 +24,3 @@ class AutodevState(TypedDict, total=False):
     final_status: str
     stop_reason: str
     feedback: str
-    retry_target: str

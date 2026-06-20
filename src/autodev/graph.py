@@ -132,15 +132,11 @@ def build_graph(
             error_hash=eh,
         )
 
-        stderr = test_result.get("stderr", "")
-        is_test_bug = "test_runner.py" in stderr and not test_result.get("passed", False)
-
         return {
             "feedback": "\n".join(feedback_parts),
             "iteration": iteration + 1,
             "error_hashes": [eh],
             "attempt_history": [attempt.model_dump()],
-            "retry_target": "tester" if is_test_bug else "developer",
         }
 
     # ── Done node ──────────────────────────────────────────────
@@ -218,16 +214,7 @@ def build_graph(
         route_after_review,
         {"done": "done", "failed": "failed", "retry": "prepare_retry"},
     )
-    def route_after_retry(state: AutodevState) -> str:
-        target = state.get("retry_target", "developer")
-        print(f"[RETRY] Routing to {target}", flush=True)
-        return target
-
-    graph.add_conditional_edges(
-        "prepare_retry",
-        route_after_retry,
-        {"developer": "developer", "tester": "tester"},
-    )
+    graph.add_edge("prepare_retry", "developer")
     graph.add_edge("done", END)
     graph.add_edge("failed", END)
 

@@ -20,6 +20,9 @@ If you receive feedback from previous failed attempts, you MUST:
 - Do not access the network, filesystem outside the working directory, or system resources
 - Every file MUST have all its imports at the top — never assume a name is available without importing it
 
+## Implementation Rules
+- When sorting by priority: HIGH comes first, then MEDIUM, then LOW. Use a priority map: `{'high': 1, 'medium': 2, 'low': 3}` for sorting (ascending order = highest priority first)
+
 ## Common Import Pitfalls (IMPORTANT)
 - `datetime`: use `from datetime import datetime` to get the datetime class, NOT just `import datetime` (which gives you the module, not the class)
 - `enum`: use `from enum import Enum` — do NOT use `Enum` without importing it
