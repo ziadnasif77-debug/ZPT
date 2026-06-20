@@ -13,6 +13,8 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from langgraph.types import Command
+
 from autodev.config import load_config
 from autodev.context_manager import ContextManager
 from autodev.graph import build_graph
