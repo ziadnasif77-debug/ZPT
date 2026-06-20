@@ -38,6 +38,13 @@
       <button id="sidebar-toggle" title="Toggle sidebar">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
+
+      <!-- Mode Toggle -->
+      <div class="mode-toggle">
+        <button id="mode-agent" class="mode-btn active" title="4-agent pipeline: Architect, Developer, Tester, Reviewer">Agent Mode</button>
+        <button id="mode-chat" class="mode-btn" title="Direct Ollama conversation">Chat Mode</button>
+      </div>
+
       <div class="model-selector">
         <label for="model-select">Model:</label>
         <select id="model-select"></select>
@@ -48,7 +55,11 @@
     <div id="messages" class="messages">
       <div id="welcome" class="welcome">
         <h2>AutoDev Chat</h2>
-        <p>Local AI assistant powered by Ollama. Start typing below.</p>
+        <p>Local AI dev team powered by Ollama. Describe what you want to build.</p>
+        <div class="welcome-modes">
+          <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 4-agent pipeline (Architect &rarr; Developer &rarr; Tester &rarr; Reviewer)</div>
+          <div class="welcome-mode"><strong>Chat Mode</strong> &mdash; Direct conversation with Ollama</div>
+        </div>
       </div>
     </div>
 
@@ -60,7 +71,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           <input type="file" id="file-input" multiple accept=".py,.js,.ts,.txt,.md,.yaml,.yml,.json,.pdf,.toml,.cfg,.sh" hidden>
         </label>
-        <textarea id="user-input" placeholder="Message AutoDev..." rows="1"></textarea>
+        <textarea id="user-input" placeholder="Describe what you want to build..." rows="1"></textarea>
         <button id="send-btn" title="Send">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>

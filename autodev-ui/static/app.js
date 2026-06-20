@@ -8,7 +8,7 @@ const state = {
   ws: null,
   streaming: false,
   attachedFiles: [],
-  abortController: null,
+  mode: "agent",
 };
 
 /* ── Init ──────────────────────────────────────────────── */
@@ -60,6 +60,17 @@ async function loadModels() {
   } catch {
     sel.innerHTML = `<option>Error loading models</option>`;
   }
+}
+
+/* ── Mode Toggle ──────────────────────────────────────── */
+function setMode(mode) {
+  state.mode = mode;
+  $("#mode-agent").classList.toggle("active", mode === "agent");
+  $("#mode-chat").classList.toggle("active", mode === "chat");
+  const input = $("#user-input");
+  input.placeholder = mode === "agent"
+    ? "Describe what you want to build..."
+    : "Message AutoDev...";
 }
 
 /* ── Conversations ─────────────────────────────────────── */
@@ -150,13 +161,27 @@ async function sendMessage() {
   state.attachedFiles = [];
   renderFileTags();
 
-  const payload = { content, model: $("#model-select").value, files };
+  const payload = {
+    content,
+    model: $("#model-select").value,
+    files,
+    mode: state.mode,
+  };
   state.ws.send(JSON.stringify(payload));
 
   state.streaming = true;
   $("#send-btn").classList.add("hidden");
   $("#stop-btn").classList.remove("hidden");
 
+  if (state.mode === "agent") {
+    setupAgentMessageHandler();
+  } else {
+    setupChatMessageHandler();
+  }
+}
+
+/* ── Chat Mode Message Handler ────────────────────────── */
+function setupChatMessageHandler() {
   let aiDiv = null;
   let aiContent = "";
 
@@ -183,6 +208,30 @@ async function sendMessage() {
   };
 }
 
+/* ── Agent Mode Message Handler ───────────────────────── */
+function setupAgentMessageHandler() {
+  let pipelineDiv = null;
+
+  state.ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === "pipeline_start") {
+      pipelineDiv = appendPipelineStart();
+    } else if (msg.type === "phase") {
+      appendPhaseCard(pipelineDiv, msg);
+    } else if (msg.type === "plan_approval") {
+      appendPlanApproval(pipelineDiv, msg.plan);
+    } else if (msg.type === "pipeline_done") {
+      appendPipelineResult(pipelineDiv, msg);
+      stopStreaming();
+      loadConversations();
+    } else if (msg.type === "error") {
+      appendErrorMessage(msg.content);
+      stopStreaming();
+    }
+  };
+}
+
 function stopStreaming() {
   state.streaming = false;
   $("#send-btn").classList.remove("hidden");
@@ -198,12 +247,257 @@ function stopGenerating() {
   stopStreaming();
 }
 
+/* ── Pipeline Rendering ───────────────────────────────── */
+function appendPipelineStart() {
+  const welcome = $("#welcome");
+  if (welcome) welcome.remove();
+
+  const container = $("#messages");
+  const div = document.createElement("div");
+  div.className = "msg assistant pipeline-msg";
+  div.innerHTML = `
+    <div class="msg-avatar">A</div>
+    <div class="msg-body">
+      <div class="pipeline-container">
+        <div class="pipeline-header">Agent Pipeline</div>
+        <div class="pipeline-phases"></div>
+      </div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function appendPhaseCard(pipelineDiv, msg) {
+  if (!pipelineDiv) return;
+  const phases = pipelineDiv.querySelector(".pipeline-phases");
+  if (!phases) return;
+
+  const existing = phases.querySelector(`.phase-card[data-node="${msg.node}"]`);
+  if (existing && msg.node !== "prepare_retry") {
+    updatePhaseCard(existing, msg);
+    return;
+  }
+
+  const card = document.createElement("div");
+  card.className = `phase-card phase-${msg.color}`;
+  card.dataset.node = msg.node;
+
+  let statusText = "";
+  let detailHtml = "";
+
+  if (msg.node === "architect") {
+    statusText = "planning...";
+    if (msg.detail && msg.detail.plan) {
+      statusText = "plan ready";
+      detailHtml = renderPlanSummary(msg.detail.plan);
+    }
+  } else if (msg.node === "developer") {
+    statusText = "writing code...";
+    if (msg.detail && msg.detail.files) {
+      statusText = `wrote ${msg.detail.files.length} file(s)`;
+      detailHtml = `<div class="phase-files">${msg.detail.files.map(f => `<span class="phase-file-tag">${escapeHtml(f)}</span>`).join("")}</div>`;
+    }
+  } else if (msg.node === "tester") {
+    statusText = "running tests...";
+    if (msg.detail && msg.detail.passed !== undefined) {
+      statusText = msg.detail.passed ? "PASSED" : "FAILED";
+      if (msg.detail.stderr && !msg.detail.passed) {
+        detailHtml = `<pre class="phase-stderr">${escapeHtml(msg.detail.stderr.substring(0, 500))}</pre>`;
+      }
+    }
+  } else if (msg.node === "reviewer") {
+    statusText = "reviewing...";
+    if (msg.detail && msg.detail.approved !== undefined) {
+      statusText = msg.detail.approved ? "APPROVED" : "CHANGES REQUESTED";
+      if (msg.detail.summary) {
+        detailHtml = `<div class="phase-summary">${escapeHtml(msg.detail.summary)}</div>`;
+      }
+      if (msg.detail.comments && msg.detail.comments.length > 0) {
+        detailHtml += `<div class="phase-comments">${msg.detail.comments.map(c =>
+          `<div class="phase-comment"><span class="comment-sev comment-sev-${c.severity || 'info'}">${c.severity || 'info'}</span> <strong>${escapeHtml(c.file_path || '')}</strong>: ${escapeHtml(c.message || '')}</div>`
+        ).join("")}</div>`;
+      }
+    }
+  } else if (msg.node === "prepare_retry") {
+    const iter = msg.detail ? msg.detail.iteration : msg.iteration;
+    statusText = `iteration ${iter}`;
+  } else if (msg.node === "done") {
+    statusText = "complete";
+  } else if (msg.node === "failed") {
+    statusText = msg.detail && msg.detail.reason ? msg.detail.reason : "stopped";
+  }
+
+  const iterTag = (msg.iteration > 0 && msg.node !== "prepare_retry") ? ` <span class="phase-iter">(iter ${msg.iteration})</span>` : "";
+
+  card.innerHTML = `
+    <div class="phase-header">
+      <span class="phase-icon">${msg.icon}</span>
+      <span class="phase-label">${escapeHtml(msg.label)}</span>${iterTag}
+      <span class="phase-status phase-status-${msg.color}">${statusText}</span>
+    </div>
+    ${detailHtml ? `<div class="phase-detail">${detailHtml}</div>` : ""}
+  `;
+
+  phases.appendChild(card);
+  scrollToBottom();
+}
+
+function updatePhaseCard(card, msg) {
+  const statusEl = card.querySelector(".phase-status");
+  if (!statusEl) return;
+
+  if (msg.node === "tester" && msg.detail) {
+    statusEl.textContent = msg.detail.passed ? "PASSED" : "FAILED";
+    if (msg.detail.stderr && !msg.detail.passed) {
+      let detailEl = card.querySelector(".phase-detail");
+      if (!detailEl) {
+        detailEl = document.createElement("div");
+        detailEl.className = "phase-detail";
+        card.appendChild(detailEl);
+      }
+      detailEl.innerHTML = `<pre class="phase-stderr">${escapeHtml(msg.detail.stderr.substring(0, 500))}</pre>`;
+    }
+  } else if (msg.node === "reviewer" && msg.detail) {
+    statusEl.textContent = msg.detail.approved ? "APPROVED" : "CHANGES REQUESTED";
+  }
+  scrollToBottom();
+}
+
+function renderPlanSummary(plan) {
+  if (!plan) return "";
+  let html = "";
+  if (plan.problem_description) {
+    html += `<div class="plan-field"><strong>Problem:</strong> ${escapeHtml(plan.problem_description)}</div>`;
+  }
+  if (plan.files_needed && plan.files_needed.length > 0) {
+    html += `<div class="plan-field"><strong>Files:</strong> ${plan.files_needed.map(f => escapeHtml(f)).join(", ")}</div>`;
+  }
+  if (plan.tasks && plan.tasks.length > 0) {
+    html += `<div class="plan-field"><strong>Tasks:</strong><ol class="plan-tasks">`;
+    for (const t of plan.tasks) {
+      html += `<li>${escapeHtml(t.description || "")} <span class="plan-task-file">${escapeHtml(t.file_path || "")}</span></li>`;
+    }
+    html += `</ol></div>`;
+  }
+  if (plan.acceptance_criteria && plan.acceptance_criteria.length > 0) {
+    html += `<div class="plan-field"><strong>Acceptance Criteria:</strong><ul>`;
+    for (const c of plan.acceptance_criteria) {
+      html += `<li>${escapeHtml(c)}</li>`;
+    }
+    html += `</ul></div>`;
+  }
+  return html;
+}
+
+function appendPlanApproval(pipelineDiv, plan) {
+  if (!pipelineDiv) return;
+  const phases = pipelineDiv.querySelector(".pipeline-phases");
+  if (!phases) return;
+
+  const card = document.createElement("div");
+  card.className = "phase-card phase-yellow plan-approval-card";
+  card.innerHTML = `
+    <div class="phase-header">
+      <span class="phase-icon">&#9208;&#65039;</span>
+      <span class="phase-label">Plan Approval Required</span>
+    </div>
+    <div class="phase-detail">
+      ${renderPlanSummary(plan)}
+      <div class="approval-buttons">
+        <button class="approve-btn" onclick="approvePlan(true, this)">&#10004; Approve</button>
+        <button class="reject-btn" onclick="approvePlan(false, this)">&#10008; Reject</button>
+      </div>
+    </div>
+  `;
+  phases.appendChild(card);
+  scrollToBottom();
+}
+
+window.approvePlan = function (approved, btnEl) {
+  const card = btnEl.closest(".plan-approval-card");
+  const buttons = card.querySelector(".approval-buttons");
+  buttons.innerHTML = approved
+    ? `<div class="approval-result approved">Plan Approved</div>`
+    : `<div class="approval-result rejected">Plan Rejected</div>`;
+
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: "plan_decision", approved }));
+  }
+};
+
+function appendPipelineResult(pipelineDiv, msg) {
+  if (!pipelineDiv) return;
+  const phases = pipelineDiv.querySelector(".pipeline-phases");
+  if (!phases) return;
+
+  const card = document.createElement("div");
+  const isSuccess = msg.status === "success";
+  card.className = `phase-card result-card ${isSuccess ? "result-success" : "result-failure"}`;
+
+  let filesHtml = "";
+  if (msg.files && msg.files.length > 0) {
+    filesHtml = `<div class="result-files">
+      <div class="result-files-header">Files created (${msg.files.length}):</div>
+      ${msg.files.map((f, i) => `
+        <div class="result-file">
+          <div class="result-file-header" onclick="toggleFileContent(this)">
+            <span class="result-file-name">${escapeHtml(f.path)}</span>
+            <span class="result-file-size">${f.size} bytes</span>
+            <span class="result-file-toggle">&#9660;</span>
+          </div>
+          ${f.content ? `<pre class="result-file-content hidden"><code class="language-python">${escapeHtml(f.content)}</code></pre>` : ""}
+        </div>
+      `).join("")}
+    </div>`;
+  }
+
+  card.innerHTML = `
+    <div class="phase-header">
+      <span class="phase-icon">${isSuccess ? "&#10004;" : "&#10008;"}</span>
+      <span class="phase-label">${isSuccess ? "Pipeline Complete" : "Pipeline Stopped"}</span>
+      ${msg.iterations > 0 ? `<span class="phase-iter">(${msg.iterations} iteration(s))</span>` : ""}
+    </div>
+    <div class="phase-detail">
+      ${!isSuccess && msg.stop_reason ? `<div class="result-reason">${escapeHtml(msg.stop_reason)}</div>` : ""}
+      ${filesHtml}
+    </div>
+  `;
+
+  phases.appendChild(card);
+
+  card.querySelectorAll("pre code").forEach((block) => {
+    hljs.highlightElement(block);
+  });
+
+  scrollToBottom();
+}
+
+window.toggleFileContent = function (headerEl) {
+  const pre = headerEl.nextElementSibling;
+  if (!pre) return;
+  pre.classList.toggle("hidden");
+  const toggle = headerEl.querySelector(".result-file-toggle");
+  if (toggle) {
+    toggle.textContent = pre.classList.contains("hidden") ? "▼" : "▲";
+  }
+  scrollToBottom();
+};
+
 /* ── Render Messages ───────────────────────────────────── */
 function renderMessages(messages) {
   const container = $("#messages");
   container.innerHTML = "";
   if (messages.length === 0) {
-    container.innerHTML = `<div id="welcome" class="welcome"><h2>AutoDev Chat</h2><p>Local AI assistant powered by Ollama. Start typing below.</p></div>`;
+    container.innerHTML = `<div id="welcome" class="welcome">
+      <h2>AutoDev Chat</h2>
+      <p>Local AI dev team powered by Ollama. Describe what you want to build.</p>
+      <div class="welcome-modes">
+        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 4-agent pipeline (Architect &rarr; Developer &rarr; Tester &rarr; Reviewer)</div>
+        <div class="welcome-mode"><strong>Chat Mode</strong> &mdash; Direct conversation with Ollama</div>
+      </div>
+    </div>`;
     return;
   }
   for (const m of messages) {
@@ -314,42 +608,25 @@ function renderMarkdown(text) {
   if (!text) return "";
   let html = text;
 
-  // Code blocks with language
   html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
     const language = lang || "plaintext";
     const escaped = escapeHtml(code.trimEnd());
     return `<pre><div class="code-header"><span>${language}</span><button class="copy-code-btn" onclick="copyText(\`${escaped.replace(/`/g, "\\`").replace(/\$/g, "\\$")}\`)">Copy</button></div><code class="language-${language}">${escaped}</code></pre>`;
   });
 
-  // Inline code
   html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-
-  // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-
-  // Italic
   html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
-
-  // Headers
   html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-
-  // Unordered lists
   html = html.replace(/^[*-] (.+)$/gm, "<li>$1</li>");
   html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>");
-
-  // Ordered lists
   html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
-
-  // Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-
-  // Paragraphs
   html = html.replace(/\n\n+/g, "</p><p>");
   if (!html.startsWith("<")) html = "<p>" + html + "</p>";
 
-  // Fix nested tags
   html = html.replace(/<p>(<h[1-3]>)/g, "$1");
   html = html.replace(/(<\/h[1-3]>)<\/p>/g, "$1");
   html = html.replace(/<p>(<pre>)/g, "$1");
@@ -408,9 +685,7 @@ function escapeHtml(str) {
 }
 
 function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    // Brief visual feedback could go here
-  }).catch(() => {
+  navigator.clipboard.writeText(text).then(() => {}).catch(() => {
     const ta = document.createElement("textarea");
     ta.value = text;
     document.body.appendChild(ta);
@@ -427,19 +702,20 @@ function scrollToBottom() {
 
 /* ── Event Listeners ───────────────────────────────────── */
 function setupEventListeners() {
-  // New chat
   $("#new-chat-btn").onclick = newConversation;
 
-  // Sidebar toggle
   $("#sidebar-toggle").onclick = () => {
     $("#sidebar").classList.toggle("collapsed");
   };
+
+  // Mode toggle
+  $("#mode-agent").onclick = () => setMode("agent");
+  $("#mode-chat").onclick = () => setMode("chat");
 
   // Send
   $("#send-btn").onclick = sendMessage;
   $("#stop-btn").onclick = stopGenerating;
 
-  // Enter to send, Shift+Enter for newline
   const input = $("#user-input");
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -448,19 +724,16 @@ function setupEventListeners() {
     }
   });
 
-  // Auto-resize textarea
   input.addEventListener("input", () => {
     input.style.height = "auto";
     input.style.height = Math.min(input.scrollHeight, 200) + "px";
   });
 
-  // File upload
   $("#file-input").addEventListener("change", (e) => {
     handleFileUpload(e.target.files);
     e.target.value = "";
   });
 
-  // Drag and drop on input area
   const inputBar = $(".input-row");
   inputBar.addEventListener("dragover", (e) => { e.preventDefault(); inputBar.style.borderColor = "var(--accent)"; });
   inputBar.addEventListener("dragleave", () => { inputBar.style.borderColor = ""; });

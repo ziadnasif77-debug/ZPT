@@ -18,6 +18,11 @@
   --border: #2a2a4a;
   --danger: #ef4444;
   --success: #22c55e;
+  --warning: #f59e0b;
+  --cyan: #22d3ee;
+  --magenta: #d946ef;
+  --blue: #3b82f6;
+  --orange: #f97316;
   --radius: 12px;
   --radius-sm: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -134,6 +139,34 @@ body { display: flex; overflow: hidden; }
 }
 #sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
 
+/* ── Mode Toggle ─────────────────────────────────────── */
+.mode-toggle {
+  display: flex;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.mode-btn:hover { color: var(--text-primary); }
+
+.mode-btn.active {
+  background: var(--accent);
+  color: white;
+}
+
 .model-selector {
   display: flex;
   align-items: center;
@@ -166,7 +199,24 @@ body { display: flex; overflow: hidden; }
   color: var(--text-secondary);
 }
 .welcome h2 { font-size: 28px; color: var(--text-primary); margin-bottom: 8px; font-weight: 600; }
-.welcome p { font-size: 15px; }
+.welcome p { font-size: 15px; margin-bottom: 20px; }
+
+.welcome-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 480px;
+  margin: 0 auto;
+  text-align: left;
+}
+.welcome-mode {
+  padding: 10px 14px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.welcome-mode strong { color: var(--text-primary); }
 
 .msg {
   max-width: 780px;
@@ -302,6 +352,256 @@ body { display: flex; overflow: hidden; }
 .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes blink { 0%,100%{opacity:.3} 50%{opacity:1} }
 
+/* ── Pipeline / Agent Mode ──────────────────────────── */
+.pipeline-container {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.pipeline-header {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(124,106,239,0.08);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.3px;
+}
+
+.pipeline-phases {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Phase Cards ────────────────────────────────────── */
+.phase-card {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  animation: phaseSlideIn 0.3s ease;
+}
+.phase-card:last-child { border-bottom: none; }
+
+@keyframes phaseSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.phase-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.phase-icon { font-size: 18px; flex-shrink: 0; }
+
+.phase-label { font-weight: 600; color: var(--text-primary); }
+
+.phase-iter { font-size: 12px; color: var(--text-dim); }
+
+.phase-status {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.phase-status-cyan { background: rgba(34,211,238,0.12); color: var(--cyan); }
+.phase-status-green { background: rgba(34,197,94,0.12); color: var(--success); }
+.phase-status-magenta { background: rgba(217,70,239,0.12); color: var(--magenta); }
+.phase-status-blue { background: rgba(59,130,246,0.12); color: var(--blue); }
+.phase-status-yellow { background: rgba(245,158,11,0.12); color: var(--warning); }
+.phase-status-orange { background: rgba(249,115,22,0.12); color: var(--orange); }
+.phase-status-red { background: rgba(239,68,68,0.12); color: var(--danger); }
+.phase-status-gray { background: rgba(148,163,184,0.12); color: var(--text-secondary); }
+
+.phase-cyan { border-left: 3px solid var(--cyan); }
+.phase-green { border-left: 3px solid var(--success); }
+.phase-magenta { border-left: 3px solid var(--magenta); }
+.phase-blue { border-left: 3px solid var(--blue); }
+.phase-yellow { border-left: 3px solid var(--warning); }
+.phase-orange { border-left: 3px solid var(--orange); }
+.phase-red { border-left: 3px solid var(--danger); }
+
+.phase-detail {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.phase-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.phase-file-tag {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: rgba(34,197,94,0.1);
+  color: var(--success);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+}
+
+.phase-stderr {
+  background: var(--bg-code);
+  color: var(--danger);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.phase-summary {
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.phase-comments { margin-top: 6px; }
+.phase-comment {
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.comment-sev {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.comment-sev-error { background: rgba(239,68,68,0.15); color: var(--danger); }
+.comment-sev-warning { background: rgba(245,158,11,0.15); color: var(--warning); }
+.comment-sev-info { background: rgba(148,163,184,0.15); color: var(--text-secondary); }
+
+/* ── Plan rendering ─────────────────────────────────── */
+.plan-field { margin-bottom: 8px; }
+.plan-field strong { color: var(--text-primary); }
+.plan-tasks { padding-left: 20px; margin-top: 4px; }
+.plan-tasks li { margin-bottom: 4px; }
+.plan-task-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ── Plan Approval ──────────────────────────────────── */
+.plan-approval-card {
+  background: rgba(245,158,11,0.04);
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.approve-btn, .reject-btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.approve-btn {
+  background: var(--success);
+  color: white;
+}
+.approve-btn:hover { background: #16a34a; }
+
+.reject-btn {
+  background: var(--danger);
+  color: white;
+}
+.reject-btn:hover { background: #dc2626; }
+
+.approval-result {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  display: inline-block;
+}
+.approval-result.approved { background: rgba(34,197,94,0.15); color: var(--success); }
+.approval-result.rejected { background: rgba(239,68,68,0.15); color: var(--danger); }
+
+/* ── Pipeline Result ────────────────────────────────── */
+.result-card { padding: 16px; }
+.result-success { border-left: 3px solid var(--success); background: rgba(34,197,94,0.04); }
+.result-failure { border-left: 3px solid var(--danger); background: rgba(239,68,68,0.04); }
+
+.result-reason {
+  color: var(--danger);
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.result-files { margin-top: 8px; }
+.result-files-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.result-file {
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.result-file-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--bg-hover);
+  transition: background 0.1s;
+}
+.result-file-header:hover { background: rgba(124,106,239,0.1); }
+
+.result-file-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.result-file-size {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.result-file-toggle {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.result-file-content {
+  margin: 0;
+  border-radius: 0;
+}
+.result-file-content code {
+  display: block;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+  background: var(--bg-code);
+}
+
 /* ── Input Bar ───────────────────────────────────────── */
 .input-bar {
   padding: 12px 24px 20px;
@@ -400,4 +700,5 @@ body { display: flex; overflow: hidden; }
   #sidebar.collapsed { margin-left: -280px; }
   .msg { padding: 8px 12px; }
   .input-bar { padding: 8px 12px 16px; }
+  .mode-toggle { display: none; }
 }
