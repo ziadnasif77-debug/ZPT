@@ -171,6 +171,7 @@ async def list_workspace_files():
 @app.websocket("/ws/chat/{cid}")
 async def chat_ws(ws: WebSocket, cid: str):
     await ws.accept()
+    print(f"[WS] WebSocket accepted for conversation {cid}")
 
     await ws.send_text(json.dumps({"type": "connected", "message": "Ready"}))
 
@@ -181,9 +182,11 @@ async def chat_ws(ws: WebSocket, cid: str):
     try:
         while True:
             raw = await ws.receive_text()
+            print(f"[WS] Received message: {raw[:200]}")
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
+                print("[WS] Invalid JSON received")
                 await ws.send_text(json.dumps({"type": "error", "content": "Invalid JSON message"}))
                 continue
 
@@ -191,6 +194,7 @@ async def chat_ws(ws: WebSocket, cid: str):
 
             if msg_type == "plan_decision":
                 decision = data.get("approved", False)
+                print(f"[WS] Plan decision: {'approved' if decision else 'rejected'}")
                 conv.messages.append({
                     "role": "system",
                     "content": f"Plan {'approved' if decision else 'rejected'} by user",
@@ -203,6 +207,7 @@ async def chat_ws(ws: WebSocket, cid: str):
             model = data.get("model", get_default_model())
             user_content = data.get("content", "")
             file_context = data.get("files", [])
+            print(f"[WS] Mode={mode}, Model={model}, Content={user_content[:100]}")
 
             parts = []
             for fc in file_context:
@@ -218,20 +223,25 @@ async def chat_ws(ws: WebSocket, cid: str):
 
             try:
                 if mode == "agent":
+                    print(f"[WS] Starting agent pipeline...")
                     await _run_agent_pipeline(ws, conv, user_content, model)
+                    print(f"[WS] Agent pipeline finished")
                 else:
+                    print(f"[WS] Starting chat mode...")
                     await _run_chat_mode(ws, conv, model)
+                    print(f"[WS] Chat mode finished")
             except Exception as exc:
                 tb = traceback.format_exc()
+                print(f"[WS] Unhandled error: {exc}\n{tb}")
                 await ws.send_text(json.dumps({
                     "type": "error",
                     "content": f"Unhandled error: {type(exc).__name__}: {exc}\n\n```\n{tb}\n```",
                 }))
 
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        print(f"[WS] WebSocket disconnected for {cid}")
+    except Exception as exc:
+        print(f"[WS] Unexpected error in WS loop: {exc}\n{traceback.format_exc()}")
 
 
 async def _run_chat_mode(ws: WebSocket, conv: Conversation, model: str):
@@ -283,8 +293,11 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
     from langgraph.types import Command
 
     try:
+        print("[PIPELINE] Initializing pipeline...")
         compiled, config = _get_pipeline()
+        print("[PIPELINE] Pipeline initialized OK")
     except Exception as exc:
+        print(f"[PIPELINE] Init failed: {exc}\n{traceback.format_exc()}")
         await ws.send_text(json.dumps({
             "type": "error",
             "content": f"Failed to initialize pipeline: {type(exc).__name__}: {exc}",
@@ -323,19 +336,23 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
     }
 
     await ws.send_text(json.dumps({"type": "pipeline_start", "model": config.models.default}))
+    print(f"[PIPELINE] Sent pipeline_start, model={config.models.default}")
 
     try:
         current_input = initial_state
 
         while True:
+            print(f"[PIPELINE] Streaming graph (input type: {type(current_input).__name__})...")
             events = await asyncio.to_thread(
                 lambda ci=current_input: list(compiled.stream(ci, thread_config, stream_mode="updates"))
             )
+            print(f"[PIPELINE] Got {len(events)} events")
 
             for event in events:
                 for node_name, node_data in event.items():
                     if node_name == "__interrupt__":
                         continue
+                    print(f"[PIPELINE] Phase: {node_name}")
                     await _send_phase_update(ws, node_name, node_data)
 
             snapshot = await asyncio.to_thread(compiled.get_state, thread_config)
@@ -377,6 +394,7 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
 
     except Exception as exc:
         tb = traceback.format_exc()
+        print(f"[PIPELINE] Error: {exc}\n{tb}")
         await ws.send_text(json.dumps({
             "type": "error",
             "content": f"Pipeline error: {type(exc).__name__}: {exc}\n\n```\n{tb}\n```",

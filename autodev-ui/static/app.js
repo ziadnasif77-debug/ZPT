@@ -99,7 +99,6 @@ function renderConversationList(convs) {
 async function selectConversation(cid) {
   state.currentConv = cid;
   disconnectWs();
-  connectWs(cid);
   const r = await fetch(`/api/conversations/${cid}`);
   const conv = await r.json();
   renderMessages(conv.messages || []);
@@ -126,11 +125,16 @@ async function deleteConversation(cid) {
 /* ── WebSocket ─────────────────────────────────────────── */
 function connectWs(cid) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${proto}://${location.host}/ws/chat/${cid}`);
-  state.ws.onclose = () => { state.ws = null; };
-  state.ws.onerror = (e) => {
+  const ws = new WebSocket(`${proto}://${location.host}/ws/chat/${cid}`);
+  state.ws = ws;
+  ws.onclose = () => {
+    if (state.ws === ws) state.ws = null;
+  };
+  ws.onerror = (e) => {
     console.error("WebSocket error:", e);
-    appendErrorMessage("WebSocket connection error. Is the server running?");
+    if (state.ws === ws) {
+      appendErrorMessage("WebSocket connection error. Is the server running?");
+    }
   };
 }
 
@@ -208,6 +212,10 @@ async function sendMessage() {
   $("#send-btn").classList.add("hidden");
   $("#stop-btn").classList.remove("hidden");
 
+  if (state.mode === "agent") {
+    appendProcessingIndicator();
+  }
+
   state.ws.send(JSON.stringify(payload));
 }
 
@@ -283,7 +291,31 @@ function stopGenerating() {
 }
 
 /* ── Pipeline Rendering ───────────────────────────────── */
+function appendProcessingIndicator() {
+  const welcome = $("#welcome");
+  if (welcome) welcome.remove();
+
+  const existing = $("#processing-indicator");
+  if (existing) return;
+
+  const container = $("#messages");
+  const div = document.createElement("div");
+  div.id = "processing-indicator";
+  div.className = "msg assistant";
+  div.innerHTML = `
+    <div class="msg-avatar">A</div>
+    <div class="msg-body">
+      <div class="msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div> Initializing agent pipeline...</div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollToBottom();
+}
+
 function appendPipelineStart(model) {
+  const indicator = $("#processing-indicator");
+  if (indicator) indicator.remove();
+
   const welcome = $("#welcome");
   if (welcome) welcome.remove();
 
@@ -631,6 +663,9 @@ function finalizeAiMessage(div, content) {
 }
 
 function appendErrorMessage(content) {
+  const indicator = $("#processing-indicator");
+  if (indicator) indicator.remove();
+
   const container = $("#messages");
   const div = document.createElement("div");
   div.className = "msg-error";
