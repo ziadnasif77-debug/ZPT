@@ -21,7 +21,7 @@ context:
 
 sandbox:
   backend: "docker"
-  image: "python:3.11-slim"
+  image: "autodev-sandbox:latest"
   cpu_limit: "1.0"
   memory_limit: "512m"
   timeout_seconds: 30

@@ -12,7 +12,7 @@ from langgraph.types import Command, interrupt
 
 from autodev.agents import architect, developer, reviewer, tester
 from autodev.context_manager import ContextManager
-from autodev.deps import pip_install_command, resolve_packages, scan_workspace
+from autodev.deps import check_imports, pip_install_command, resolve_packages, scan_workspace
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
 
@@ -65,10 +65,14 @@ def build_graph(
 
         workspace = Path(state.get("workspace_path", "./workspace"))
         imports = scan_workspace(workspace)
+        missing = check_imports(imports, workspace)
         plan = state.get("plan") or {}
         declared = plan.get("dependencies", [])
         packages = resolve_packages(imports, declared, workspace)
         setup_cmd = pip_install_command(packages)
+
+        if missing and not sandbox._config.network:
+            setup_cmd = None
 
         sandbox_result = sandbox.run(
             workspace=workspace,

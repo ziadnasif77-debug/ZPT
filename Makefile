@@ -1,4 +1,4 @@
-.PHONY: install run eval logs update-model clean
+.PHONY: install run eval logs update-model clean build-sandbox
 
 install:
 	pip install -e ".[dev]"
@@ -20,6 +20,9 @@ update-model:
 		exit 1; \
 	fi
 	bash scripts/update_model.sh $(MODEL)
+
+build-sandbox:
+	docker build -t autodev-sandbox:latest ./docker/
 
 clean:
 	rm -rf workspace/* logs/* eval/results/*
