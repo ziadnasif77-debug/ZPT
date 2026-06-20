@@ -20,7 +20,9 @@ T = TypeVar("T", bound=BaseModel)
 
 _CHARS_PER_TOKEN = 4
 _MAX_PARSE_RETRIES = 2
+_DEFAULT_MAX_COMPLETION_TOKENS = 8192
 _JSON_HINT = "\n\nIMPORTANT: Return ONLY valid JSON. No markdown fences, no explanation, no text before or after the JSON object."
+_TRUNCATION_HINT = "\n\nIMPORTANT: Keep your response CONCISE. The content field should contain minimal but complete code. Do NOT exceed the output token limit."
 
 
 def estimate_tokens(text: str) -> int:
@@ -52,7 +54,7 @@ class LLMClient:
         model: str,
         messages: list[dict],
         temperature: float,
-    ) -> str:
+    ) -> tuple[str, bool]:
         prompt_tokens = estimate_messages_tokens(messages)
 
         cache_key = self._cache_key(model, messages)
@@ -68,13 +70,18 @@ class LLMClient:
                 latency_ms=0,
                 cached=True,
             )
-            return raw
+            return raw, False
+
+        budget = self._config.get_token_budget(model)
+        prompt_est = estimate_messages_tokens(messages)
+        max_completion = min(_DEFAULT_MAX_COMPLETION_TOKENS, max(2048, budget - prompt_est))
 
         t0 = time.perf_counter()
         resp = self._client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
+            max_tokens=max_completion,
         )
         latency_ms = (time.perf_counter() - t0) * 1000
         raw = resp.choices[0].message.content or ""
@@ -83,6 +90,9 @@ class LLMClient:
         if resp.usage:
             prompt_tokens = resp.usage.prompt_tokens
             completion_tokens = resp.usage.completion_tokens
+
+        finish_reason = resp.choices[0].finish_reason or ""
+        truncated = finish_reason == "length"
 
         self._logger.log_call(
             agent=agent,
@@ -94,10 +104,10 @@ class LLMClient:
             latency_ms=round(latency_ms, 1),
             cached=False,
         )
-        if self._config.llm.cache_enabled:
+        if self._config.llm.cache_enabled and not truncated:
             self._cache[cache_key] = raw
 
-        return raw
+        return raw, truncated
 
     def chat(
         self,
@@ -115,13 +125,14 @@ class LLMClient:
             )
 
         if response_model is None:
-            return self._call_llm(agent, model, messages, temperature)
+            raw, _truncated = self._call_llm(agent, model, messages, temperature)
+            return raw
 
         msgs = _inject_json_hint(messages)
         last_error: Exception | None = None
 
         for attempt in range(_MAX_PARSE_RETRIES + 1):
-            raw = self._call_llm(agent, model, msgs, temperature)
+            raw, truncated = self._call_llm(agent, model, msgs, temperature)
 
             try:
                 return _parse_model(raw, response_model)
@@ -129,7 +140,10 @@ class LLMClient:
                 last_error = exc
                 self._cache.pop(self._cache_key(model, msgs), None)
                 if attempt < _MAX_PARSE_RETRIES:
-                    msgs = _append_retry_feedback(msgs, raw, exc)
+                    if truncated:
+                        msgs = _append_truncation_feedback(msgs)
+                    else:
+                        msgs = _append_retry_feedback(msgs, raw, exc)
 
         raise JSONParseError(
             f"Failed to parse {response_model.__name__} after {_MAX_PARSE_RETRIES + 1} attempts. "
@@ -146,6 +160,24 @@ def _inject_json_hint(messages: list[dict]) -> list[dict]:
                 m["content"] += _JSON_HINT
             return msgs
     msgs.insert(0, {"role": "system", "content": _JSON_HINT.strip()})
+    return msgs
+
+
+def _append_truncation_feedback(messages: list[dict]) -> list[dict]:
+    """Add a user message telling the LLM its output was truncated."""
+    msgs = [m.copy() for m in messages]
+    feedback = (
+        "ERROR: Your previous response was TRUNCATED — it was cut off before the JSON was complete. "
+        "Your response MUST fit within the output token limit.\n\n"
+        "To fix this, you MUST:\n"
+        "1. Write SHORTER code — remove comments, docstrings, and unnecessary whitespace\n"
+        "2. Use minimal variable names where possible\n"
+        "3. Combine related logic into fewer lines\n"
+        "4. Do NOT include any text outside the JSON\n"
+        "5. The ENTIRE JSON response must be complete and valid\n\n"
+        "Respond with ONLY the complete JSON object, keeping code as concise as possible."
+    )
+    msgs.append({"role": "user", "content": feedback})
     return msgs
 
 

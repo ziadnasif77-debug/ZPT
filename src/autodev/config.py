@@ -81,7 +81,7 @@ class AppConfig(BaseModel):
         return getattr(self.agent_models, agent, self.models.default)
 
     def get_token_budget(self, model: str) -> int:
-        return self.context.max_tokens_per_model.get(model, 4096)
+        return self.context.max_tokens_per_model.get(model, 32000)
 
 
 def _find_config_path() -> Path:
