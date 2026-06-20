@@ -22,10 +22,13 @@ class ModelsConfig(BaseModel):
 
 
 class AgentModelsConfig(BaseModel):
+    product_manager: str = "default"
     architect: str = "default"
     developer: str = "default"
     tester: str = "default"
+    debugger: str = "default"
     reviewer: str = "default"
+    judge: str = "default"
 
 
 class ContextConfig(BaseModel):
@@ -50,6 +53,17 @@ class LoopConfig(BaseModel):
     pass_full_attempt_history: bool = True
 
 
+class GitConfig(BaseModel):
+    auto_commit: bool = True
+    rollback_on_repeated_error: bool = True
+
+
+class ErrorGraphConfig(BaseModel):
+    enabled: bool = True
+    path: str = "./logs/error_graph.json"
+    escalate_after: int = 5
+
+
 class HITLConfig(BaseModel):
     approve_plan: bool = True
 
@@ -66,13 +80,16 @@ class AppConfig(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)
+    git: GitConfig = Field(default_factory=GitConfig)
+    error_graph: ErrorGraphConfig = Field(default_factory=ErrorGraphConfig)
     human_in_the_loop: HITLConfig = Field(default_factory=HITLConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     workspace_dir: str = "./workspace"
 
     @model_validator(mode="after")
     def _resolve_agent_defaults(self) -> "AppConfig":
-        for field in ("architect", "developer", "tester", "reviewer"):
+        for field in ("product_manager", "architect", "developer", "tester",
+                       "debugger", "reviewer", "judge"):
             if getattr(self.agent_models, field) == "default":
                 setattr(self.agent_models, field, self.models.default)
         return self

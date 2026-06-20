@@ -295,7 +295,8 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
 
     if model and model != config.models.default:
         config.models.default = model
-        for agent in ("architect", "developer", "tester", "reviewer"):
+        for agent in ("product_manager", "architect", "developer", "tester",
+                       "debugger", "reviewer", "judge"):
             setattr(config.agent_models, agent, model)
 
     import yaml
@@ -311,17 +312,22 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
     initial_state = {
         "user_request": request,
         "workspace_path": str(workspace),
+        "product_spec": None,
         "plan": None,
         "plan_approved": False,
         "code_bundle": None,
         "test_result": None,
+        "debug_report": None,
         "review": None,
+        "judge_decision": None,
         "iteration": 0,
         "attempt_history": [],
         "error_hashes": [],
+        "error_graph_context": "",
         "final_status": "",
         "stop_reason": "",
         "feedback": "",
+        "modified_files": [],
     }
 
     await _ws_send(ws, {"type": "pipeline_start", "model": config.models.default})
@@ -492,11 +498,22 @@ async def _ws_send(ws: WebSocket, msg: dict) -> bool:
 async def _send_agent_update(ws: WebSocket, node: str, data: dict):
     """Send an agent_update message after a graph node completes."""
     content = {}
-    if node == "architect":
+    if node == "product_manager":
+        spec = data.get("product_spec") or {}
+        content = {
+            "scope": spec.get("scope", ""),
+            "milestones": spec.get("milestones", []),
+            "success_criteria": spec.get("success_criteria", []),
+        }
+    elif node == "architect":
         content = data.get("plan") or {}
     elif node == "developer":
         cb = data.get("code_bundle") or {}
-        content = [f.get("path", "?") for f in cb.get("files", [])] if cb.get("files") else []
+        modified = data.get("modified_files", [])
+        file_list = [f.get("path", "?") for f in cb.get("files", [])] if cb.get("files") else []
+        content = file_list
+        if modified:
+            content = {"files": file_list, "modified": modified}
     elif node == "tester":
         tr = data.get("test_result") or {}
         content = {
@@ -505,12 +522,26 @@ async def _send_agent_update(ws: WebSocket, node: str, data: dict):
             "stderr": (tr.get("stderr") or "")[:1000],
             "stdout": (tr.get("stdout") or "")[:500],
         }
+    elif node == "debugger":
+        dr = data.get("debug_report") or {}
+        content = {
+            "root_cause": dr.get("root_cause", ""),
+            "affected_files": dr.get("affected_files", []),
+            "error_category": dr.get("error_category", ""),
+        }
     elif node == "reviewer":
         rv = data.get("review") or {}
         content = {
             "approved": rv.get("approved", False),
             "summary": rv.get("summary", ""),
             "comments": rv.get("comments", []),
+        }
+    elif node == "judge":
+        jd = data.get("judge_decision") or {}
+        content = {
+            "decision": jd.get("decision", ""),
+            "reason": jd.get("reason", ""),
+            "strategy": jd.get("strategy", ""),
         }
     elif node == "prepare_retry":
         content = {"iteration": data.get("iteration", 0)}

@@ -8,10 +8,13 @@ models:
   default: "qwen2.5-coder:7b"
 
 agent_models:
+  product_manager: "default"
   architect: "default"
   developer: "default"
   tester: "default"
+  debugger: "default"
   reviewer: "default"
+  judge: "default"
 
 context:
   max_tokens_per_model:
@@ -33,6 +36,15 @@ loop:
   max_iterations: 5
   stop_if_no_progress: true
   pass_full_attempt_history: true
+
+git:
+  auto_commit: true
+  rollback_on_repeated_error: true
+
+error_graph:
+  enabled: true
+  path: "./logs/error_graph.json"
+  escalate_after: 5
 
 human_in_the_loop:
   approve_plan: true

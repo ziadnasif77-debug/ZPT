@@ -1,4 +1,8 @@
-"""LangGraph orchestration — connects all agents with loop, anti-stuck, and HITL."""
+"""LangGraph orchestration — 7-agent pipeline with git, error graph, and escalation.
+
+Flow: Product Manager → Architect → [approval] → Developer → [git commit] →
+      Tester → [if failed] Debugger → Reviewer → Judge → [ACCEPT/REJECT/ROLLBACK/ESCALATE]
+"""
 
 from __future__ import annotations
 
@@ -10,10 +14,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from autodev.agents import architect, developer, reviewer, tester
+from autodev.agents import architect, debugger, developer, judge, product_manager, reviewer, tester
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
 from autodev.diagnostics import check_api_mismatch, diagnose_traceback
+from autodev.error_graph import ErrorGraph
+from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
 from autodev.import_fixer import fix_imports
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
@@ -67,19 +73,13 @@ def _read_py_files(workspace: Path) -> dict[str, str]:
 
 
 def _preflight_validate(workspace: Path) -> dict | None:
-    """Statically validate code before the sandbox runs.
-
-    Returns a synthetic failing TestResult dict if a problem is found that the
-    sandbox would only rediscover at runtime, or None if everything looks sane.
-    This saves a full sandbox round-trip and yields precise feedback.
-    """
+    """Statically validate code before the sandbox runs."""
     import ast as _ast
 
     files = _read_py_files(workspace)
     if not files:
         return None
 
-    # 1. Syntax must be valid in every file (syntax_fixer ran already).
     for name, source in files.items():
         try:
             _ast.parse(source)
@@ -93,7 +93,6 @@ def _preflight_validate(workspace: Path) -> dict | None:
                 "duration_seconds": 0.0,
             }
 
-    # 2. The test must only import names the code actually defines.
     test_source = files.get("test_runner.py", "")
     code_files = {n: s for n, s in files.items() if n != "test_runner.py"}
     if test_source and code_files:
@@ -119,9 +118,22 @@ def build_graph(
 ) -> Any:
     graph = StateGraph(AutodevState)
 
+    eg_path = config.error_graph.path if config.error_graph.enabled else None
+    error_graph = ErrorGraph(persist_path=eg_path)
+
+    # ── Product Manager ───────────────────────────────────────
+    def product_manager_node(state: AutodevState) -> dict:
+        return product_manager.run(state, config, llm)
+
     # ── Architect ──────────────────────────────────────────────
     def architect_node(state: AutodevState) -> dict:
-        return architect.run(state, config, llm)
+        result = architect.run(state, config, llm)
+        spec = state.get("product_spec")
+        if spec and result.get("plan"):
+            plan = result["plan"]
+            if not plan.get("acceptance_criteria"):
+                plan["acceptance_criteria"] = spec.get("success_criteria", [])
+        return result
 
     # ── Human approval gate ────────────────────────────────────
     def approval_gate(state: AutodevState) -> dict:
@@ -142,6 +154,13 @@ def build_graph(
         result = developer.run(state, config, llm)
         workspace = Path(state.get("workspace_path", "./workspace"))
         _auto_fix_code(workspace)
+
+        if config.git.auto_commit:
+            iteration = state.get("iteration", 0)
+            sha = commit_snapshot(workspace, f"autodev: attempt {iteration}")
+            if sha:
+                print(f"[GIT] Committed attempt {iteration}: {sha[:8]}", flush=True)
+
         return result
 
     # ── Tester ─────────────────────────────────────────────────
@@ -151,7 +170,6 @@ def build_graph(
         workspace = Path(state.get("workspace_path", "./workspace"))
         _auto_fix_code(workspace)
 
-        # Pre-flight static validation — catch errors WITHOUT a sandbox run.
         preflight = _preflight_validate(workspace)
         if preflight is not None:
             print(f"[PREFLIGHT] {preflight['stderr'][:200]}", flush=True)
@@ -182,26 +200,121 @@ def build_graph(
         )
         return {"test_result": sandbox_result.model_dump()}
 
+    # ── Debugger ───────────────────────────────────────────────
+    def debugger_node(state: AutodevState) -> dict:
+        test_result = state.get("test_result") or {}
+        if test_result.get("passed", False):
+            return {"debug_report": {"root_cause": "N/A", "affected_files": [], "error_category": "none"}}
+
+        workspace = Path(state.get("workspace_path", "./workspace"))
+        code_files = _read_py_files(workspace)
+        stderr = test_result.get("stderr", "")
+        stdout = test_result.get("stdout", "")
+
+        diag = diagnose_traceback(stderr, stdout, code_files)
+
+        if diag.confident and diag.message:
+            print(f"[DEBUGGER-DIAG] {diag.error_type} -> {diag.culprit}: {diag.message[:120]}", flush=True)
+            report = {
+                "root_cause": diag.message,
+                "affected_files": [diag.culprit],
+                "error_category": diag.error_type,
+            }
+        else:
+            result = debugger.run(state, config, llm)
+            report = result.get("debug_report", {})
+
+        iteration = state.get("iteration", 0)
+        if config.error_graph.enabled:
+            node = error_graph.record_error(
+                error_type=report.get("error_category", "unknown"),
+                file=", ".join(report.get("affected_files", [])),
+                root_cause=report.get("root_cause", ""),
+                iteration=iteration,
+                stderr=stderr[:500],
+            )
+            ctx = error_graph.get_error_context(node.signature)
+            return {"debug_report": report, "error_graph_context": ctx}
+
+        return {"debug_report": report}
+
     # ── Reviewer ───────────────────────────────────────────────
     def reviewer_node(state: AutodevState) -> dict:
         return reviewer.run(state, config, llm)
 
-    # ── Record attempt + prepare feedback for retry ────────────
+    # ── Judge ──────────────────────────────────────────────────
+    def judge_node(state: AutodevState) -> dict:
+        test_result = state.get("test_result") or {}
+        review_data = state.get("review") or {}
+
+        if review_data.get("approved") and test_result.get("passed", False):
+            workspace = Path(state.get("workspace_path", "./workspace"))
+            iteration = state.get("iteration", 0)
+            if config.git.auto_commit:
+                tag_success(workspace, iteration)
+                print(f"[GIT] Tagged successful build at iteration {iteration}", flush=True)
+            if config.error_graph.enabled:
+                error_graph.reset()
+            return {
+                "judge_decision": {
+                    "decision": "ACCEPT",
+                    "reason": "All tests passed and reviewer approved",
+                    "strategy": "",
+                },
+            }
+
+        debug_report = state.get("debug_report") or {}
+        error_ctx = state.get("error_graph_context", "")
+
+        if config.error_graph.enabled and error_ctx:
+            if "occurred 5+" in error_ctx or "ESCALATE" in error_ctx.upper():
+                return {
+                    "judge_decision": {
+                        "decision": "ESCALATE",
+                        "reason": "Same error repeated 5+ times — human intervention needed",
+                        "strategy": "Review the error pattern and provide manual guidance",
+                    },
+                }
+            if "occurred 4 TIMES" in error_ctx or "ROLLBACK" in error_ctx.upper():
+                workspace = Path(state.get("workspace_path", "./workspace"))
+                if config.git.rollback_on_repeated_error:
+                    rolled_back = rollback_to_last_success(workspace)
+                    if rolled_back:
+                        return {
+                            "judge_decision": {
+                                "decision": "ROLLBACK",
+                                "reason": "Same error repeated 4 times — rolled back to last stable version",
+                                "strategy": "Try a completely different implementation approach",
+                            },
+                        }
+
+        result = judge.run(state, config, llm)
+        return result
+
+    # ── Prepare retry (feedback assembly) ─────────────────────
     def prepare_retry(state: AutodevState) -> dict:
         test_result = state.get("test_result") or {}
         review_data = state.get("review") or {}
-        code_bundle = state.get("code_bundle")
+        debug_report = state.get("debug_report") or {}
         iteration = state.get("iteration", 0)
 
         feedback_parts: list[str] = []
         workspace = Path(state.get("workspace_path", "./workspace"))
         code_files = _read_py_files(workspace)
 
+        if debug_report.get("root_cause"):
+            feedback_parts.append(f"ROOT CAUSE: {debug_report['root_cause']}")
+            if debug_report.get("affected_files"):
+                feedback_parts.append(f"AFFECTED FILES: {', '.join(debug_report['affected_files'])}")
+
+        error_ctx = state.get("error_graph_context", "")
+        if error_ctx:
+            feedback_parts.append(error_ctx)
+
         if not test_result.get("passed", False):
             stderr = test_result.get("stderr", "")
             stdout = test_result.get("stdout", "")
 
-            # Deterministic diagnosis — trust the actual traceback over guesses.
             diag = diagnose_traceback(stderr, stdout, code_files)
             if diag.confident and diag.message:
                 print(f"[DIAGNOSE] {diag.error_type} -> {diag.culprit}: {diag.message[:120]}", flush=True)
@@ -231,6 +344,10 @@ def build_graph(
         if review_data.get("summary"):
             feedback_parts.append(f"Reviewer summary: {review_data['summary']}")
 
+        judge_decision = state.get("judge_decision") or {}
+        if judge_decision.get("strategy"):
+            feedback_parts.append(f"JUDGE STRATEGY: {judge_decision['strategy']}")
+
         error_text = test_result.get("stderr", "") + review_data.get("summary", "")
         eh = _error_hash(error_text)
 
@@ -251,28 +368,28 @@ def build_graph(
 
     # ── Done node ──────────────────────────────────────────────
     def done_node(state: AutodevState) -> dict:
-        return {"final_status": "success", "stop_reason": "Approved by reviewer"}
+        return {"final_status": "success", "stop_reason": "Approved by reviewer and judge"}
 
     # ── Failed node ────────────────────────────────────────────
     def failed_node(state: AutodevState) -> dict:
         iteration = state.get("iteration", 0)
-        max_iter = config.loop.max_iterations
-        hashes = state.get("error_hashes", [])
-
-        test_result = state.get("test_result") or {}
-        review_data = state.get("review") or {}
-        current_error = test_result.get("stderr", "") + review_data.get("summary", "")
-        current_hash = _error_hash(current_error)
-        is_stuck = current_hash in hashes or len(hashes) != len(set(hashes))
+        judge_decision = state.get("judge_decision") or {}
+        decision = judge_decision.get("decision", "")
 
         if not state.get("plan_approved", True):
             reason = state.get("stop_reason", "Plan rejected by user")
-        elif is_stuck:
+        elif decision == "ESCALATE":
             reason = (
-                f"Stopped: same error repeated (no progress). "
+                f"Escalated to user: {judge_decision.get('reason', 'repeated errors')}. "
+                f"Completed {iteration} iteration(s)."
+            )
+        elif decision == "ROLLBACK":
+            reason = (
+                f"Rolled back: {judge_decision.get('reason', 'repeated errors')}. "
                 f"Completed {iteration} iteration(s)."
             )
         else:
+            max_iter = config.loop.max_iterations
             reason = (
                 f"Stopped: reached max iterations ({max_iter}). "
                 f"The code may still have issues."
@@ -285,18 +402,29 @@ def build_graph(
             return "developer"
         return "failed"
 
-    def route_after_review(state: AutodevState) -> str:
-        review_data = state.get("review") or {}
+    def route_after_tester(state: AutodevState) -> str:
         test_result = state.get("test_result") or {}
+        if test_result.get("passed", False):
+            return "reviewer"
+        return "debugger"
 
-        if review_data.get("approved") and test_result.get("passed", False):
+    def route_after_judge(state: AutodevState) -> str:
+        judge_decision = state.get("judge_decision") or {}
+        decision = judge_decision.get("decision", "REJECT").upper()
+
+        if decision == "ACCEPT":
             return "done"
+
+        if decision in ("ESCALATE", "ROLLBACK"):
+            return "failed"
 
         iteration = state.get("iteration", 0)
         if iteration >= config.loop.max_iterations:
             return "failed"
 
         if config.loop.stop_if_no_progress:
+            test_result = state.get("test_result") or {}
+            review_data = state.get("review") or {}
             error_text = test_result.get("stderr", "") + review_data.get("summary", "")
             eh = _error_hash(error_text)
             if eh in state.get("error_hashes", []):
@@ -305,23 +433,29 @@ def build_graph(
         return "retry"
 
     # ── Build the graph ────────────────────────────────────────
+    graph.add_node("product_manager", product_manager_node)
     graph.add_node("architect", architect_node)
     graph.add_node("approval_gate", approval_gate)
     graph.add_node("developer", developer_node)
     graph.add_node("tester", tester_node)
+    graph.add_node("debugger", debugger_node)
     graph.add_node("reviewer", reviewer_node)
+    graph.add_node("judge", judge_node)
     graph.add_node("prepare_retry", prepare_retry)
     graph.add_node("done", done_node)
     graph.add_node("failed", failed_node)
 
-    graph.add_edge(START, "architect")
+    graph.add_edge(START, "product_manager")
+    graph.add_edge("product_manager", "architect")
     graph.add_edge("architect", "approval_gate")
     graph.add_conditional_edges("approval_gate", route_after_approval)
     graph.add_edge("developer", "tester")
-    graph.add_edge("tester", "reviewer")
+    graph.add_conditional_edges("tester", route_after_tester, {"reviewer": "reviewer", "debugger": "debugger"})
+    graph.add_edge("debugger", "reviewer")
+    graph.add_edge("reviewer", "judge")
     graph.add_conditional_edges(
-        "reviewer",
-        route_after_review,
+        "judge",
+        route_after_judge,
         {"done": "done", "failed": "failed", "retry": "prepare_retry"},
     )
     graph.add_edge("prepare_retry", "developer")

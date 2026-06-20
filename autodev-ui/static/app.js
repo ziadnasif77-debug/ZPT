@@ -363,11 +363,14 @@ function appendPipelineStart(model) {
 }
 
 const AGENT_INFO = {
+  product_manager: { icon: "\u{1F4CB}", label: "Product Mgr", color: "purple" },
   architect:     { icon: "\u{1F9E0}", label: "Architect",  color: "cyan" },
-  approval_gate: { icon: "⏸️", label: "Approval",   color: "yellow" },
+  approval_gate: { icon: "⻾️", label: "Approval",   color: "yellow" },
   developer:     { icon: "\u{1F4BB}", label: "Developer",  color: "green" },
   tester:        { icon: "\u{1F9EA}", label: "Tester",     color: "magenta" },
+  debugger:      { icon: "\u{1F41B}", label: "Debugger",   color: "red" },
   reviewer:      { icon: "\u{1F50D}", label: "Reviewer",   color: "blue" },
+  judge:         { icon: "⚖️", label: "Judge",      color: "gold" },
   prepare_retry: { icon: "\u{1F504}", label: "Retry",      color: "orange" },
   done:          { icon: "✅",    label: "Done",        color: "green" },
   failed:        { icon: "❌",    label: "Failed",      color: "red" },
@@ -387,16 +390,37 @@ function appendAgentCard(pipelineDiv, agent, status, content) {
   let statusText = status === "done" ? "completed" : status;
   let detailHtml = "";
 
-  if (agent === "architect" && content) {
+  if (agent === "product_manager" && content) {
+    statusText = "spec ready";
+    let specHtml = "";
+    if (content.scope) specHtml += `<div class="plan-field"><strong>Scope:</strong> ${escapeHtml(content.scope)}</div>`;
+    if (content.milestones && content.milestones.length > 0) {
+      specHtml += `<div class="plan-field"><strong>Milestones:</strong><ol class="plan-tasks">${content.milestones.map(m => `<li>${escapeHtml(m)}</li>`).join("")}</ol></div>`;
+    }
+    detailHtml = specHtml;
+  } else if (agent === "architect" && content) {
     statusText = "plan ready";
     detailHtml = renderPlanSummary(content);
-  } else if (agent === "developer" && Array.isArray(content) && content.length > 0) {
-    statusText = `wrote ${content.length} file(s)`;
-    detailHtml = `<div class="phase-files">${content.map(f => `<span class="phase-file-tag">${escapeHtml(f)}</span>`).join("")}</div>`;
+  } else if (agent === "developer" && content) {
+    const fileList = Array.isArray(content) ? content : (content.files || []);
+    const modified = content.modified || [];
+    statusText = `wrote ${fileList.length} file(s)`;
+    if (modified.length > 0 && modified.length < fileList.length) {
+      statusText = `modified ${modified.length}/${fileList.length} file(s)`;
+    }
+    detailHtml = `<div class="phase-files">${fileList.map(f => `<span class="phase-file-tag">${escapeHtml(typeof f === 'string' ? f : f.path || '?')}</span>`).join("")}</div>`;
   } else if (agent === "tester" && content) {
     statusText = content.passed ? "PASSED" : "FAILED";
     if (content.stderr && !content.passed) {
       detailHtml = `<pre class="phase-stderr">${escapeHtml(String(content.stderr).substring(0, 500))}</pre>`;
+    }
+  } else if (agent === "debugger" && content) {
+    statusText = content.error_category || "analyzed";
+    if (content.root_cause) {
+      detailHtml = `<div class="phase-summary"><strong>Root cause:</strong> ${escapeHtml(content.root_cause.substring(0, 300))}</div>`;
+      if (content.affected_files && content.affected_files.length > 0) {
+        detailHtml += `<div class="phase-files">${content.affected_files.map(f => `<span class="phase-file-tag">${escapeHtml(f)}</span>`).join("")}</div>`;
+      }
     }
   } else if (agent === "reviewer" && content) {
     statusText = content.approved ? "APPROVED" : "CHANGES REQUESTED";
@@ -407,6 +431,16 @@ function appendAgentCard(pipelineDiv, agent, status, content) {
       detailHtml += `<div class="phase-comments">${content.comments.map(c =>
         `<div class="phase-comment"><span class="comment-sev comment-sev-${c.severity || 'info'}">${c.severity || 'info'}</span> <strong>${escapeHtml(c.file_path || '')}</strong>: ${escapeHtml(c.message || '')}</div>`
       ).join("")}</div>`;
+    }
+  } else if (agent === "judge" && content) {
+    const decisionIcons = { "ACCEPT": "✅", "REJECT": "🔄", "ROLLBACK": "⏪", "ESCALATE": "🚨" };
+    const dec = (content.decision || "").toUpperCase();
+    statusText = `${decisionIcons[dec] || ""} ${dec}`;
+    if (content.reason) {
+      detailHtml = `<div class="phase-summary">${escapeHtml(content.reason)}</div>`;
+    }
+    if (content.strategy) {
+      detailHtml += `<div class="phase-summary"><strong>Strategy:</strong> ${escapeHtml(content.strategy)}</div>`;
     }
   } else if (agent === "prepare_retry") {
     statusText = `iteration ${content.iteration || "?"}`;
@@ -660,7 +694,7 @@ function renderMessages(messages) {
       <h2>AutoDev Chat</h2>
       <p>Local AI dev team powered by Ollama. Describe what you want to build.</p>
       <div class="welcome-modes">
-        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 4-agent pipeline (Architect &rarr; Developer &rarr; Tester &rarr; Reviewer)</div>
+        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 7-agent pipeline (PM &rarr; Architect &rarr; Developer &rarr; Tester &rarr; Debugger &rarr; Reviewer &rarr; Judge)</div>
         <div class="welcome-mode"><strong>Chat Mode</strong> &mdash; Direct conversation with Ollama</div>
       </div>
     </div>`;

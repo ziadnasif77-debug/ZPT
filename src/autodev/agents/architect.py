@@ -25,6 +25,16 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
 
     context_parts = [f"## User Request\n{user_request}"]
 
+    spec = state.get("product_spec")
+    if spec:
+        context_parts.append(
+            f"## Product Specification\n"
+            f"- Scope: {spec.get('scope', 'N/A')}\n"
+            f"- Milestones: {', '.join(spec.get('milestones', []))}\n"
+            f"- Success Criteria: {', '.join(spec.get('success_criteria', []))}\n"
+            f"- Out of Scope: {', '.join(spec.get('out_of_scope', []))}"
+        )
+
     workspace = Path(state.get("workspace_path", "./workspace"))
     if workspace.exists():
         existing = [str(p.relative_to(workspace)) for p in workspace.rglob("*.py")]

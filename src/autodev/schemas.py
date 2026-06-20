@@ -57,3 +57,22 @@ class AttemptRecord(BaseModel):
     test_result: TestResult | None = None
     review: Review | None = None
     error_hash: str = ""
+
+
+class ProductSpec(BaseModel):
+    milestones: list[str] = Field(default_factory=list)
+    scope: str = ""
+    out_of_scope: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+
+
+class DebugReport(BaseModel):
+    root_cause: str = ""
+    affected_files: list[str] = Field(default_factory=list)
+    error_category: str = "unknown"
+
+
+class JudgeDecision(BaseModel):
+    decision: str = "REJECT"
+    reason: str = ""
+    strategy: str = ""

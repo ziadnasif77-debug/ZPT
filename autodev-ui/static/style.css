@@ -23,6 +23,8 @@
   --magenta: #d946ef;
   --blue: #3b82f6;
   --orange: #f97316;
+  --purple: #a855f7;
+  --gold: #eab308;
   --radius: 12px;
   --radius-sm: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -428,6 +430,8 @@ body { display: flex; overflow: hidden; }
 .phase-status-orange { background: rgba(249,115,22,0.12); color: var(--orange); }
 .phase-status-red { background: rgba(239,68,68,0.12); color: var(--danger); }
 .phase-status-gray { background: rgba(148,163,184,0.12); color: var(--text-secondary); }
+.phase-status-purple { background: rgba(168,85,247,0.12); color: var(--purple); }
+.phase-status-gold { background: rgba(234,179,8,0.12); color: var(--gold); }
 
 .phase-cyan { border-left: 3px solid var(--cyan); }
 .phase-green { border-left: 3px solid var(--success); }
@@ -436,6 +440,8 @@ body { display: flex; overflow: hidden; }
 .phase-yellow { border-left: 3px solid var(--warning); }
 .phase-orange { border-left: 3px solid var(--orange); }
 .phase-red { border-left: 3px solid var(--danger); }
+.phase-purple { border-left: 3px solid var(--purple); }
+.phase-gold { border-left: 3px solid var(--gold); }
 
 .phase-detail {
   margin-top: 8px;
