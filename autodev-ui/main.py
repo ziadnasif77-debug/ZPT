@@ -208,7 +208,7 @@ async def chat_ws(ws: WebSocket, cid: str):
                 conv.title = user_content[:50].strip() or "New Chat"
 
             if mode == "agent":
-                await _run_agent_pipeline(ws, conv, user_content)
+                await _run_agent_pipeline(ws, conv, user_content, model)
             else:
                 await _run_chat_mode(ws, conv, model)
 
@@ -255,7 +255,7 @@ async def _run_chat_mode(ws: WebSocket, conv: Conversation, model: str):
             conv.messages.pop()
 
 
-async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str):
+async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, model: str | None = None):
     """Run the full 4-agent LangGraph pipeline, streaming progress to the UI."""
     from langgraph.types import Command
 
@@ -267,6 +267,11 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str):
             "content": f"Failed to initialize pipeline: {type(exc).__name__}: {exc}",
         }))
         return
+
+    if model and model != config.models.default:
+        config.models.default = model
+        for agent in ("architect", "developer", "tester", "reviewer"):
+            setattr(config.agent_models, agent, model)
 
     import yaml
     config_path = Path(__file__).resolve().parent.parent / "config.yaml"
@@ -294,7 +299,7 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str):
         "feedback": "",
     }
 
-    await ws.send_text(json.dumps({"type": "pipeline_start"}))
+    await ws.send_text(json.dumps({"type": "pipeline_start", "model": config.models.default}))
 
     try:
         current_input = initial_state

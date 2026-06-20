@@ -216,7 +216,7 @@ function setupAgentMessageHandler() {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "pipeline_start") {
-      pipelineDiv = appendPipelineStart();
+      pipelineDiv = appendPipelineStart(msg.model);
     } else if (msg.type === "phase") {
       appendPhaseCard(pipelineDiv, msg);
     } else if (msg.type === "plan_approval") {
@@ -248,18 +248,19 @@ function stopGenerating() {
 }
 
 /* ── Pipeline Rendering ───────────────────────────────── */
-function appendPipelineStart() {
+function appendPipelineStart(model) {
   const welcome = $("#welcome");
   if (welcome) welcome.remove();
 
   const container = $("#messages");
   const div = document.createElement("div");
   div.className = "msg assistant pipeline-msg";
+  const modelTag = model ? ` <span class="pipeline-model">${escapeHtml(model)}</span>` : "";
   div.innerHTML = `
     <div class="msg-avatar">A</div>
     <div class="msg-body">
       <div class="pipeline-container">
-        <div class="pipeline-header">Agent Pipeline</div>
+        <div class="pipeline-header">Agent Pipeline${modelTag}</div>
         <div class="pipeline-phases"></div>
       </div>
     </div>

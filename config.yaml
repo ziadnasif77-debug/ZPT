@@ -16,6 +16,7 @@ agent_models:
 context:
   max_tokens_per_model:
     "qwen3-coder:latest": 32000
+    "qwen2.5-coder:7b": 32000
   relevant_files_only: true
   summarize_when_over_budget: true
 
