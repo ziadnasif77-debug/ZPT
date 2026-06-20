@@ -20,8 +20,20 @@ If you receive feedback from previous failed attempts, you MUST:
 - Do not access the network, filesystem outside the working directory, or system resources
 - Every file MUST have all its imports at the top — never assume a name is available without importing it
 
-## Implementation Rules
+## Implementation Rules (CRITICAL)
 - When sorting by priority: HIGH comes first, then MEDIUM, then LOW. Use a priority map: `{'high': 1, 'medium': 2, 'low': 3}` for sorting (ascending order = highest priority first)
+- When reading JSON files: ALWAYS handle the case where the file does not exist OR is empty. Use `try/except` with `FileNotFoundError` and `json.JSONDecodeError`, returning an empty list/dict as default
+- When saving objects to JSON: custom classes are NOT JSON-serializable. Always convert objects to dictionaries first using a `to_dict()` method before calling `json.dump()`
+- When loading objects from JSON: convert dictionaries back to objects using `**data` unpacking or a `from_dict()` classmethod
+- File I/O pattern for JSON:
+  ```python
+  def load(filepath):
+      try:
+          with open(filepath, 'r') as f:
+              return json.load(f)
+      except (FileNotFoundError, json.JSONDecodeError):
+          return []
+  ```
 
 ## Common Import Pitfalls (IMPORTANT)
 - `datetime`: use `from datetime import datetime` to get the datetime class, NOT just `import datetime` (which gives you the module, not the class)
