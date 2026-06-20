@@ -117,8 +117,17 @@ def resolve_packages(
             continue
         packages.add(pkg)
     for dep in declared:
-        if dep.lower() not in _PREINSTALLED_PACKAGES:
-            packages.add(dep)
+        dep_base = dep.split(".")[0].lower()
+        if dep_base in _STDLIB_MODULES:
+            continue
+        if dep_base in local_modules:
+            continue
+        if dep_base in _PREINSTALLED_MODULES:
+            continue
+        pkg = _MODULE_TO_PACKAGE.get(dep_base, dep)
+        if pkg.lower() in _PREINSTALLED_PACKAGES:
+            continue
+        packages.add(pkg)
     return sorted(packages)
 
 
@@ -133,6 +142,29 @@ def pip_install_command(packages: list[str]) -> str | None:
         return None
     escaped = [p.replace("'", "") for p in packages]
     return f"pip install --no-cache-dir --quiet {' '.join(escaped)}"
+
+
+def audit_dependencies(workspace: Path) -> dict[str, list[str]]:
+    """Classify all imports in workspace into builtin, preinstalled, local, and missing."""
+    all_imports = scan_workspace(workspace)
+    local_modules = {p.stem for p in workspace.glob("*.py")} if workspace.is_dir() else set()
+
+    result: dict[str, list[str]] = {
+        "builtin": [],
+        "preinstalled": [],
+        "local": [],
+        "missing": [],
+    }
+    for mod in sorted(all_imports):
+        if mod in _STDLIB_MODULES:
+            result["builtin"].append(mod)
+        elif mod in local_modules:
+            result["local"].append(mod)
+        elif mod in _PREINSTALLED_MODULES:
+            result["preinstalled"].append(mod)
+        else:
+            result["missing"].append(mod)
+    return result
 
 
 def scan_workspace(workspace: Path) -> set[str]:

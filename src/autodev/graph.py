@@ -12,7 +12,7 @@ from langgraph.types import Command, interrupt
 
 from autodev.agents import architect, developer, reviewer, tester
 from autodev.context_manager import ContextManager
-from autodev.deps import check_imports, pip_install_command, resolve_packages, scan_workspace
+from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
 
@@ -64,14 +64,20 @@ def build_graph(
             return tester_result
 
         workspace = Path(state.get("workspace_path", "./workspace"))
+        audit = audit_dependencies(workspace)
+        print(f"[DEPS] builtin (skip): {audit['builtin']}", flush=True)
+        print(f"[DEPS] preinstalled (skip): {audit['preinstalled']}", flush=True)
+        print(f"[DEPS] local (skip): {audit['local']}", flush=True)
+        print(f"[DEPS] missing: {audit['missing']}", flush=True)
+
         imports = scan_workspace(workspace)
-        missing = check_imports(imports, workspace)
         plan = state.get("plan") or {}
         declared = plan.get("dependencies", [])
         packages = resolve_packages(imports, declared, workspace)
         setup_cmd = pip_install_command(packages)
 
-        if missing and not sandbox._config.network:
+        if packages and not sandbox._config.network:
+            print(f"[DEPS] WARNING: need {packages} but sandbox has no network, skipping pip install", flush=True)
             setup_cmd = None
 
         sandbox_result = sandbox.run(
