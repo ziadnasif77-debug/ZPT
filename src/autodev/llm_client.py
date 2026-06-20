@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import TYPE_CHECKING, Type, TypeVar
 
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=BaseModel)
 
 _CHARS_PER_TOKEN = 4
+_MAX_PARSE_RETRIES = 2
+_JSON_HINT = "\n\nIMPORTANT: Return ONLY valid JSON. No markdown fences, no explanation, no text before or after the JSON object."
 
 
 def estimate_tokens(text: str) -> int:
@@ -43,6 +46,59 @@ class LLMClient:
         blob = json.dumps({"model": model, "messages": messages}, sort_keys=True)
         return hashlib.sha256(blob.encode()).hexdigest()
 
+    def _call_llm(
+        self,
+        agent: str,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+    ) -> str:
+        prompt_tokens = estimate_messages_tokens(messages)
+
+        cache_key = self._cache_key(model, messages)
+        if self._config.llm.cache_enabled and cache_key in self._cache:
+            raw = self._cache[cache_key]
+            self._logger.log_call(
+                agent=agent,
+                model=model,
+                messages=messages,
+                response=raw,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=estimate_tokens(raw),
+                latency_ms=0,
+                cached=True,
+            )
+            return raw
+
+        t0 = time.perf_counter()
+        resp = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+        )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        raw = resp.choices[0].message.content or ""
+        completion_tokens = estimate_tokens(raw)
+
+        if resp.usage:
+            prompt_tokens = resp.usage.prompt_tokens
+            completion_tokens = resp.usage.completion_tokens
+
+        self._logger.log_call(
+            agent=agent,
+            model=model,
+            messages=messages,
+            response=raw,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=round(latency_ms, 1),
+            cached=False,
+        )
+        if self._config.llm.cache_enabled:
+            self._cache[cache_key] = raw
+
+        return raw
+
     def chat(
         self,
         agent: str,
@@ -58,62 +114,118 @@ class LLMClient:
                 f"Prompt ({prompt_tokens} est. tokens) exceeds budget ({budget}) for model {model}"
             )
 
-        cache_key = self._cache_key(model, messages)
-        if self._config.llm.cache_enabled and cache_key in self._cache:
-            raw = self._cache[cache_key]
-            self._logger.log_call(
-                agent=agent,
-                model=model,
-                messages=messages,
-                response=raw,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=estimate_tokens(raw),
-                latency_ms=0,
-                cached=True,
-            )
-        else:
-            t0 = time.perf_counter()
-            resp = self._client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-            )
-            latency_ms = (time.perf_counter() - t0) * 1000
-            raw = resp.choices[0].message.content or ""
-            completion_tokens = estimate_tokens(raw)
+        if response_model is None:
+            return self._call_llm(agent, model, messages, temperature)
 
-            if resp.usage:
-                prompt_tokens = resp.usage.prompt_tokens
-                completion_tokens = resp.usage.completion_tokens
+        msgs = _inject_json_hint(messages)
+        last_error: Exception | None = None
 
-            self._logger.log_call(
-                agent=agent,
-                model=model,
-                messages=messages,
-                response=raw,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                latency_ms=round(latency_ms, 1),
-                cached=False,
-            )
-            if self._config.llm.cache_enabled:
-                self._cache[cache_key] = raw
+        for attempt in range(_MAX_PARSE_RETRIES + 1):
+            raw = self._call_llm(agent, model, msgs, temperature)
 
-        if response_model is not None:
-            return _parse_model(raw, response_model)
-        return raw
+            try:
+                return _parse_model(raw, response_model)
+            except (JSONParseError, Exception) as exc:
+                last_error = exc
+                self._cache.pop(self._cache_key(model, msgs), None)
+                if attempt < _MAX_PARSE_RETRIES:
+                    msgs = _append_retry_feedback(msgs, raw, exc)
+
+        raise JSONParseError(
+            f"Failed to parse {response_model.__name__} after {_MAX_PARSE_RETRIES + 1} attempts. "
+            f"Last error: {last_error}"
+        )
+
+
+def _inject_json_hint(messages: list[dict]) -> list[dict]:
+    """Add JSON-only instruction to the system prompt without mutating the original."""
+    msgs = [m.copy() for m in messages]
+    for m in msgs:
+        if m["role"] == "system":
+            if _JSON_HINT.strip() not in m["content"]:
+                m["content"] += _JSON_HINT
+            return msgs
+    msgs.insert(0, {"role": "system", "content": _JSON_HINT.strip()})
+    return msgs
+
+
+def _append_retry_feedback(messages: list[dict], raw: str, error: Exception) -> list[dict]:
+    """Add a user message explaining the parse failure so the LLM can fix it."""
+    msgs = [m.copy() for m in messages]
+    feedback = (
+        f"Your previous response was not valid JSON. Error: {error}\n\n"
+        f"Your response started with: {raw[:200]!r}\n\n"
+        "Please respond with ONLY a valid JSON object. "
+        "No markdown code fences, no explanatory text, just the raw JSON."
+    )
+    msgs.append({"role": "user", "content": feedback})
+    return msgs
+
+
+def _extract_json(raw: str) -> str:
+    """Best-effort extraction of a JSON object from messy LLM output."""
+    text = raw.strip()
+
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    text = re.sub(r"^```(?:json|JSON)?\s*\n?", "", text)
+    text = re.sub(r"\n?\s*```\s*$", "", text)
+    text = text.strip()
+
+    # If there are still fences embedded mid-string, try to extract between them
+    fence_match = re.search(r"```(?:json|JSON)?\s*\n([\s\S]*?)\n\s*```", text)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # Strip any text before the first { and after the last }
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        text = text[first_brace : last_brace + 1]
+
+    return text
 
 
 def _parse_model(raw: str, model_cls: Type[T]) -> T:
+    """Parse LLM output into a Pydantic model, with progressive cleanup."""
     text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = lines[1:]  # drop opening fence
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    return model_cls.model_validate_json(text)
+
+    # Attempt 1: try raw text directly (fast path for well-behaved models)
+    try:
+        return model_cls.model_validate_json(text)
+    except Exception:
+        pass
+
+    # Attempt 2: extract JSON from markdown/surrounding text
+    cleaned = _extract_json(text)
+    try:
+        return model_cls.model_validate_json(cleaned)
+    except Exception:
+        pass
+
+    # Attempt 3: parse as Python dict (handles single quotes, trailing commas, etc.)
+    try:
+        parsed = json.loads(cleaned)
+        return model_cls.model_validate(parsed)
+    except Exception:
+        pass
+
+    # Attempt 4: try fixing common issues (trailing commas, unquoted keys)
+    try:
+        fixed = re.sub(r",\s*([}\]])", r"\1", cleaned)  # trailing commas
+        parsed = json.loads(fixed)
+        return model_cls.model_validate(parsed)
+    except Exception:
+        pass
+
+    raise JSONParseError(
+        f"Cannot parse LLM response as {model_cls.__name__}.\n"
+        f"Cleaned text: {cleaned[:500]!r}"
+    )
 
 
 class TokenBudgetExceeded(Exception):
+    pass
+
+
+class JSONParseError(Exception):
     pass
