@@ -81,6 +81,7 @@ class Sandbox:
                     }
                 },
                 working_dir="/app",
+                environment={"PYTHONPATH": "/app"},
                 network_disabled=not self._config.network,
                 mem_limit=self._config.memory_limit,
                 nano_cpus=cpu_nano,

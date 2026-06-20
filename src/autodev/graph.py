@@ -67,7 +67,7 @@ def build_graph(
         imports = scan_workspace(workspace)
         plan = state.get("plan") or {}
         declared = plan.get("dependencies", [])
-        packages = resolve_packages(imports, declared)
+        packages = resolve_packages(imports, declared, workspace)
         setup_cmd = pip_install_command(packages)
 
         sandbox_result = sandbox.run(

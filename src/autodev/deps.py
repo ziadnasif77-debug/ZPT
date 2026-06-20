@@ -39,13 +39,21 @@ def extract_imports(source: str) -> set[str]:
 
 
 def resolve_packages(
-    modules: set[str], declared_deps: list[str] | None = None
+    modules: set[str],
+    declared_deps: list[str] | None = None,
+    workspace: Path | None = None,
 ) -> list[str]:
-    """Map module names to pip package names, filtering out stdlib."""
+    """Map module names to pip package names, filtering out stdlib and local modules."""
     declared = set(declared_deps or [])
+    local_modules: set[str] = set()
+    if workspace and workspace.is_dir():
+        local_modules = {p.stem for p in workspace.glob("*.py")}
+
     packages: set[str] = set()
     for mod in modules:
         if mod in _STDLIB_MODULES:
+            continue
+        if mod in local_modules:
             continue
         pkg = _MODULE_TO_PACKAGE.get(mod, mod)
         packages.add(pkg)
