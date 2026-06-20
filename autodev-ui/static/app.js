@@ -128,10 +128,37 @@ function connectWs(cid) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   state.ws = new WebSocket(`${proto}://${location.host}/ws/chat/${cid}`);
   state.ws.onclose = () => { state.ws = null; };
+  state.ws.onerror = (e) => {
+    console.error("WebSocket error:", e);
+    appendErrorMessage("WebSocket connection error. Is the server running?");
+  };
 }
 
 function disconnectWs() {
   if (state.ws) { state.ws.close(); state.ws = null; }
+}
+
+function waitForWsReady() {
+  return new Promise((resolve, reject) => {
+    if (!state.ws) { reject(new Error("No WebSocket")); return; }
+    if (state.ws.readyState === WebSocket.OPEN) { resolve(); return; }
+
+    const onOpen = () => { cleanup(); resolve(); };
+    const onError = (e) => { cleanup(); reject(e); };
+    const onClose = () => { cleanup(); reject(new Error("WebSocket closed")); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error("WebSocket connect timeout")); }, 5000);
+
+    function cleanup() {
+      clearTimeout(timer);
+      state.ws.removeEventListener("open", onOpen);
+      state.ws.removeEventListener("error", onError);
+      state.ws.removeEventListener("close", onClose);
+    }
+
+    state.ws.addEventListener("open", onOpen);
+    state.ws.addEventListener("error", onError);
+    state.ws.addEventListener("close", onClose);
+  });
 }
 
 /* ── Send Message ──────────────────────────────────────── */
@@ -147,10 +174,19 @@ async function sendMessage() {
 
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     connectWs(state.currentConv);
-    await new Promise((resolve) => {
-      state.ws.onopen = resolve;
-      setTimeout(resolve, 2000);
-    });
+    try {
+      await waitForWsReady();
+    } catch (e) {
+      appendErrorMessage(`Cannot connect to server: ${e.message}`);
+      return;
+    }
+  }
+
+  // Set up message handler BEFORE sending so no responses are missed
+  if (state.mode === "agent") {
+    setupAgentMessageHandler();
+  } else {
+    setupChatMessageHandler();
   }
 
   const files = [...state.attachedFiles];
@@ -167,17 +203,12 @@ async function sendMessage() {
     files,
     mode: state.mode,
   };
-  state.ws.send(JSON.stringify(payload));
 
   state.streaming = true;
   $("#send-btn").classList.add("hidden");
   $("#stop-btn").classList.remove("hidden");
 
-  if (state.mode === "agent") {
-    setupAgentMessageHandler();
-  } else {
-    setupChatMessageHandler();
-  }
+  state.ws.send(JSON.stringify(payload));
 }
 
 /* ── Chat Mode Message Handler ────────────────────────── */
@@ -188,7 +219,9 @@ function setupChatMessageHandler() {
   state.ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
 
-    if (msg.type === "start") {
+    if (msg.type === "connected") {
+      return;
+    } else if (msg.type === "start") {
       aiDiv = appendAiMessageStart();
     } else if (msg.type === "token") {
       aiContent += msg.content;
@@ -215,7 +248,9 @@ function setupAgentMessageHandler() {
   state.ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
 
-    if (msg.type === "pipeline_start") {
+    if (msg.type === "connected") {
+      return;
+    } else if (msg.type === "pipeline_start") {
       pipelineDiv = appendPipelineStart(msg.model);
     } else if (msg.type === "phase") {
       appendPhaseCard(pipelineDiv, msg);

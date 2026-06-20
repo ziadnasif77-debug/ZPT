@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +67,7 @@ class Conversation:
     id: str
     title: str = "New Chat"
     messages: list[dict] = field(default_factory=list)
+    _pending_approval: asyncio.Future | None = field(default=None, repr=False)
 
 
 conversations: dict[str, Conversation] = {}
@@ -169,6 +171,9 @@ async def list_workspace_files():
 @app.websocket("/ws/chat/{cid}")
 async def chat_ws(ws: WebSocket, cid: str):
     await ws.accept()
+
+    await ws.send_text(json.dumps({"type": "connected", "message": "Ready"}))
+
     if cid not in conversations:
         conversations[cid] = Conversation(id=cid)
     conv = conversations[cid]
@@ -176,7 +181,11 @@ async def chat_ws(ws: WebSocket, cid: str):
     try:
         while True:
             raw = await ws.receive_text()
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await ws.send_text(json.dumps({"type": "error", "content": "Invalid JSON message"}))
+                continue
 
             msg_type = data.get("type", "message")
 
@@ -186,7 +195,7 @@ async def chat_ws(ws: WebSocket, cid: str):
                     "role": "system",
                     "content": f"Plan {'approved' if decision else 'rejected'} by user",
                 })
-                if hasattr(conv, "_pending_approval"):
+                if conv._pending_approval is not None and not conv._pending_approval.done():
                     conv._pending_approval.set_result(decision)
                 continue
 
@@ -207,12 +216,21 @@ async def chat_ws(ws: WebSocket, cid: str):
             if conv.title == "New Chat" and len(conv.messages) == 1:
                 conv.title = user_content[:50].strip() or "New Chat"
 
-            if mode == "agent":
-                await _run_agent_pipeline(ws, conv, user_content, model)
-            else:
-                await _run_chat_mode(ws, conv, model)
+            try:
+                if mode == "agent":
+                    await _run_agent_pipeline(ws, conv, user_content, model)
+                else:
+                    await _run_chat_mode(ws, conv, model)
+            except Exception as exc:
+                tb = traceback.format_exc()
+                await ws.send_text(json.dumps({
+                    "type": "error",
+                    "content": f"Unhandled error: {type(exc).__name__}: {exc}\n\n```\n{tb}\n```",
+                }))
 
     except WebSocketDisconnect:
+        pass
+    except Exception:
         pass
 
 
@@ -256,7 +274,12 @@ async def _run_chat_mode(ws: WebSocket, conv: Conversation, model: str):
 
 
 async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, model: str | None = None):
-    """Run the full 4-agent LangGraph pipeline, streaming progress to the UI."""
+    """Run the full 4-agent LangGraph pipeline, streaming progress to the UI.
+
+    Plan approval uses a background task to read WebSocket messages while
+    the pipeline is blocked waiting for user input — this avoids the deadlock
+    where the main read loop can't process plan_decision messages.
+    """
     from langgraph.types import Command
 
     try:
@@ -339,17 +362,7 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
                         "plan": plan_data,
                     }))
 
-                    loop = asyncio.get_event_loop()
-                    future = loop.create_future()
-                    conv._pending_approval = future
-
-                    try:
-                        approved = await asyncio.wait_for(future, timeout=600)
-                    except asyncio.TimeoutError:
-                        approved = False
-                    finally:
-                        if hasattr(conv, "_pending_approval"):
-                            del conv._pending_approval
+                    approved = await _wait_for_plan_decision(ws, conv)
 
                     resume_val = "yes" if approved else "no"
                     current_input = Command(resume=resume_val)
@@ -363,10 +376,68 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
             return
 
     except Exception as exc:
+        tb = traceback.format_exc()
         await ws.send_text(json.dumps({
             "type": "error",
-            "content": f"Pipeline error: {type(exc).__name__}: {exc}",
+            "content": f"Pipeline error: {type(exc).__name__}: {exc}\n\n```\n{tb}\n```",
         }))
+
+
+async def _wait_for_plan_decision(ws: WebSocket, conv: Conversation) -> bool:
+    """Read WebSocket messages until we get a plan_decision.
+
+    This solves the deadlock: the main read loop (chat_ws) is blocked inside
+    _run_agent_pipeline, so we read directly from the WebSocket here.
+    """
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    conv._pending_approval = future
+
+    async def read_until_decision():
+        try:
+            while not future.done():
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("type") == "plan_decision":
+                    decision = data.get("approved", False)
+                    conv.messages.append({
+                        "role": "system",
+                        "content": f"Plan {'approved' if decision else 'rejected'} by user",
+                    })
+                    if not future.done():
+                        future.set_result(decision)
+                    return
+        except WebSocketDisconnect:
+            if not future.done():
+                future.set_result(False)
+        except Exception:
+            if not future.done():
+                future.set_result(False)
+
+    reader_task = asyncio.create_task(read_until_decision())
+
+    try:
+        approved = await asyncio.wait_for(future, timeout=600)
+    except asyncio.TimeoutError:
+        approved = False
+        await ws.send_text(json.dumps({
+            "type": "error",
+            "content": "Plan approval timed out after 10 minutes. Rejecting plan.",
+        }))
+    finally:
+        conv._pending_approval = None
+        if not reader_task.done():
+            reader_task.cancel()
+            try:
+                await reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    return approved
 
 
 async def _send_phase_update(ws: WebSocket, node: str, data: dict):
