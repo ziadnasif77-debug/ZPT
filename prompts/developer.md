@@ -18,6 +18,14 @@ If you receive feedback from previous failed attempts, you MUST:
 - Do not import modules that are not in the Python standard library unless listed in the plan's dependencies
 - Do not use `input()` or any interactive prompts — the code runs unattended in a sandbox
 - Do not access the network, filesystem outside the working directory, or system resources
+- Every file MUST have all its imports at the top — never assume a name is available without importing it
+
+## Common Import Pitfalls (IMPORTANT)
+- `datetime`: use `from datetime import datetime` to get the datetime class, NOT just `import datetime` (which gives you the module, not the class)
+- `enum`: use `from enum import Enum` — do NOT use `Enum` without importing it
+- `json`: use `import json` — it is a standard library module, not an external package
+- If a file uses ANY name from another module, it MUST import that name at the top of the file
+- Each file is independent — imports in one file do NOT carry over to another file
 
 ## Output Format
 Respond with a single JSON block (no other text outside the JSON). The JSON must match this schema exactly:
