@@ -13,6 +13,7 @@ from langgraph.types import Command, interrupt
 from autodev.agents import architect, developer, reviewer, tester
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
+from autodev.import_fixer import fix_imports
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
 
@@ -24,6 +25,21 @@ if TYPE_CHECKING:
 
 def _error_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _auto_fix_imports(workspace: Path) -> None:
+    """Scan all .py files in workspace and auto-fix missing imports."""
+    if not workspace.is_dir():
+        return
+    for py_file in workspace.glob("*.py"):
+        try:
+            source = py_file.read_text(encoding="utf-8")
+            fixed = fix_imports(source)
+            if fixed != source:
+                py_file.write_text(fixed, encoding="utf-8")
+                print(f"[IMPORT-FIX] Auto-fixed imports in {py_file.name}", flush=True)
+        except Exception as exc:
+            print(f"[IMPORT-FIX] Error fixing {py_file.name}: {exc}", flush=True)
 
 
 def build_graph(
@@ -54,16 +70,20 @@ def build_graph(
 
     # ── Developer ──────────────────────────────────────────────
     def developer_node(state: AutodevState) -> dict:
-        return developer.run(state, config, llm)
+        result = developer.run(state, config, llm)
+        workspace = Path(state.get("workspace_path", "./workspace"))
+        _auto_fix_imports(workspace)
+        return result
 
     # ── Tester ─────────────────────────────────────────────────
     def tester_node(state: AutodevState) -> dict:
         tester_result = tester.run(state, config, llm)
 
+        workspace = Path(state.get("workspace_path", "./workspace"))
+        _auto_fix_imports(workspace)
+
         if sandbox is None:
             return tester_result
-
-        workspace = Path(state.get("workspace_path", "./workspace"))
         audit = audit_dependencies(workspace)
         print(f"[DEPS] builtin (skip): {audit['builtin']}", flush=True)
         print(f"[DEPS] preinstalled (skip): {audit['preinstalled']}", flush=True)
