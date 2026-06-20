@@ -255,20 +255,45 @@ function setupAgentMessageHandler() {
   let pipelineDiv = null;
 
   state.ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (e) {
+      console.error("Failed to parse WS message:", event.data);
+      return;
+    }
+    console.log("[WS-RECV]", msg.type, msg);
 
     if (msg.type === "connected") {
       return;
+
     } else if (msg.type === "pipeline_start") {
       pipelineDiv = appendPipelineStart(msg.model);
-    } else if (msg.type === "phase") {
-      appendPhaseCard(pipelineDiv, msg);
+
+    } else if (msg.type === "agent_update") {
+      if (!pipelineDiv) pipelineDiv = appendPipelineStart(null);
+      appendAgentCard(pipelineDiv, msg.agent, msg.status, msg.content);
+
     } else if (msg.type === "plan_approval") {
+      if (!pipelineDiv) pipelineDiv = appendPipelineStart(null);
       appendPlanApproval(pipelineDiv, msg.plan);
-    } else if (msg.type === "pipeline_done") {
+
+    } else if (msg.type === "done") {
+      if (!pipelineDiv) pipelineDiv = appendPipelineStart(null);
       appendPipelineResult(pipelineDiv, msg);
       stopStreaming();
       loadConversations();
+
+    } else if (msg.type === "phase") {
+      if (!pipelineDiv) pipelineDiv = appendPipelineStart(null);
+      appendPhaseCard(pipelineDiv, msg);
+
+    } else if (msg.type === "pipeline_done") {
+      if (!pipelineDiv) pipelineDiv = appendPipelineStart(null);
+      appendPipelineResult(pipelineDiv, msg);
+      stopStreaming();
+      loadConversations();
+
     } else if (msg.type === "error") {
       appendErrorMessage(msg.content);
       stopStreaming();
@@ -286,7 +311,6 @@ function stopGenerating() {
   if (state.ws) {
     state.ws.close();
     state.ws = null;
-    connectWs(state.currentConv);
   }
   stopStreaming();
 }
@@ -336,6 +360,73 @@ function appendPipelineStart(model) {
   container.appendChild(div);
   scrollToBottom();
   return div;
+}
+
+const AGENT_INFO = {
+  architect:     { icon: "\u{1F9E0}", label: "Architect",  color: "cyan" },
+  approval_gate: { icon: "⏸️", label: "Approval",   color: "yellow" },
+  developer:     { icon: "\u{1F4BB}", label: "Developer",  color: "green" },
+  tester:        { icon: "\u{1F9EA}", label: "Tester",     color: "magenta" },
+  reviewer:      { icon: "\u{1F50D}", label: "Reviewer",   color: "blue" },
+  prepare_retry: { icon: "\u{1F504}", label: "Retry",      color: "orange" },
+  done:          { icon: "✅",    label: "Done",        color: "green" },
+  failed:        { icon: "❌",    label: "Failed",      color: "red" },
+};
+
+function appendAgentCard(pipelineDiv, agent, status, content) {
+  if (!pipelineDiv) return;
+  const phases = pipelineDiv.querySelector(".pipeline-phases");
+  if (!phases) return;
+
+  const info = AGENT_INFO[agent] || { icon: "•", label: agent, color: "gray" };
+
+  const card = document.createElement("div");
+  card.className = `phase-card phase-${info.color}`;
+  card.dataset.agent = agent;
+
+  let statusText = status === "done" ? "completed" : status;
+  let detailHtml = "";
+
+  if (agent === "architect" && content) {
+    statusText = "plan ready";
+    detailHtml = renderPlanSummary(content);
+  } else if (agent === "developer" && Array.isArray(content) && content.length > 0) {
+    statusText = `wrote ${content.length} file(s)`;
+    detailHtml = `<div class="phase-files">${content.map(f => `<span class="phase-file-tag">${escapeHtml(f)}</span>`).join("")}</div>`;
+  } else if (agent === "tester" && content) {
+    statusText = content.passed ? "PASSED" : "FAILED";
+    if (content.stderr && !content.passed) {
+      detailHtml = `<pre class="phase-stderr">${escapeHtml(String(content.stderr).substring(0, 500))}</pre>`;
+    }
+  } else if (agent === "reviewer" && content) {
+    statusText = content.approved ? "APPROVED" : "CHANGES REQUESTED";
+    if (content.summary) {
+      detailHtml = `<div class="phase-summary">${escapeHtml(content.summary)}</div>`;
+    }
+    if (content.comments && content.comments.length > 0) {
+      detailHtml += `<div class="phase-comments">${content.comments.map(c =>
+        `<div class="phase-comment"><span class="comment-sev comment-sev-${c.severity || 'info'}">${c.severity || 'info'}</span> <strong>${escapeHtml(c.file_path || '')}</strong>: ${escapeHtml(c.message || '')}</div>`
+      ).join("")}</div>`;
+    }
+  } else if (agent === "prepare_retry") {
+    statusText = `iteration ${content.iteration || "?"}`;
+  } else if (agent === "done") {
+    statusText = "complete";
+  } else if (agent === "failed") {
+    statusText = content.stop_reason || "stopped";
+  }
+
+  card.innerHTML = `
+    <div class="phase-header">
+      <span class="phase-icon">${info.icon}</span>
+      <span class="phase-label">${escapeHtml(info.label)}</span>
+      <span class="phase-status phase-status-${info.color}">${statusText}</span>
+    </div>
+    ${detailHtml ? `<div class="phase-detail">${detailHtml}</div>` : ""}
+  `;
+
+  phases.appendChild(card);
+  scrollToBottom();
 }
 
 function appendPhaseCard(pipelineDiv, msg) {
@@ -522,6 +613,11 @@ function appendPipelineResult(pipelineDiv, msg) {
     </div>`;
   }
 
+  let summaryHtml = "";
+  if (msg.content && typeof msg.content === "string") {
+    summaryHtml = `<div class="result-summary">${escapeHtml(msg.content)}</div>`;
+  }
+
   card.innerHTML = `
     <div class="phase-header">
       <span class="phase-icon">${isSuccess ? "&#10004;" : "&#10008;"}</span>
@@ -529,6 +625,7 @@ function appendPipelineResult(pipelineDiv, msg) {
       ${msg.iterations > 0 ? `<span class="phase-iter">(${msg.iterations} iteration(s))</span>` : ""}
     </div>
     <div class="phase-detail">
+      ${summaryHtml}
       ${!isSuccess && msg.stop_reason ? `<div class="result-reason">${escapeHtml(msg.stop_reason)}</div>` : ""}
       ${filesHtml}
     </div>

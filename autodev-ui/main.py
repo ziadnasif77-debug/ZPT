@@ -282,12 +282,7 @@ async def _run_chat_mode(ws: WebSocket, conv: Conversation, model: str):
 
 
 async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, model: str | None = None):
-    """Run the full 4-agent LangGraph pipeline, streaming progress to the UI.
-
-    Plan approval uses a background task to read WebSocket messages while
-    the pipeline is blocked waiting for user input — this avoids the deadlock
-    where the main read loop can't process plan_decision messages.
-    """
+    """Run the 4-agent LangGraph pipeline, sending agent_update after each node."""
     try:
         from langgraph.types import Command
         print("[PIPELINE] Initializing pipeline...", flush=True)
@@ -295,10 +290,7 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         print("[PIPELINE] Pipeline initialized OK", flush=True)
     except Exception as exc:
         print(f"[PIPELINE] Init failed: {exc}\n{traceback.format_exc()}", flush=True)
-        await ws.send_text(json.dumps({
-            "type": "error",
-            "content": f"Failed to initialize pipeline: {type(exc).__name__}: {exc}",
-        }))
+        await _ws_send(ws, {"type": "error", "content": f"Failed to initialize pipeline: {exc}"})
         return
 
     if model and model != config.models.default:
@@ -332,7 +324,7 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         "feedback": "",
     }
 
-    await ws.send_text(json.dumps({"type": "pipeline_start", "model": config.models.default}))
+    await _ws_send(ws, {"type": "pipeline_start", "model": config.models.default})
     print(f"[PIPELINE] Sent pipeline_start, model={config.models.default}", flush=True)
 
     try:
@@ -349,17 +341,25 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
                 for node_name, node_data in event.items():
                     if node_name == "__interrupt__":
                         continue
-                    print(f"[PIPELINE] Phase: {node_name}", flush=True)
-                    await _send_phase_update(ws, node_name, node_data)
+                    print(f"[PIPELINE] Node finished: {node_name}", flush=True)
+                    await _send_agent_update(ws, node_name, node_data)
 
             snapshot = await asyncio.to_thread(compiled.get_state, thread_config)
 
             if not snapshot.next:
-                await _send_final_result(ws, snapshot.values, workspace)
-                conv.messages.append({
-                    "role": "assistant",
-                    "content": _build_summary_text(snapshot.values, workspace),
+                final = snapshot.values
+                status = final.get("final_status", "unknown")
+                summary = _build_summary_text(final, workspace)
+                files_info = _collect_files(final, workspace)
+                await _ws_send(ws, {
+                    "type": "done",
+                    "content": summary,
+                    "status": status,
+                    "stop_reason": final.get("stop_reason", ""),
+                    "iterations": final.get("iteration", 0),
+                    "files": files_info,
                 })
+                conv.messages.append({"role": "assistant", "content": summary})
                 return
 
             if snapshot.next == ("approval_gate",):
@@ -371,31 +371,36 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
                             plan_data = val.get("plan")
 
                 if plan_data:
-                    await ws.send_text(json.dumps({
-                        "type": "plan_approval",
-                        "plan": plan_data,
-                    }))
+                    await _ws_send(ws, {"type": "plan_approval", "plan": _to_serializable(plan_data)})
+                    print("[PIPELINE] Sent plan_approval, waiting for user...", flush=True)
 
                     approved = await _wait_for_plan_decision(ws, conv)
+                    print(f"[PIPELINE] Plan decision: {'approved' if approved else 'rejected'}", flush=True)
 
-                    resume_val = "yes" if approved else "no"
-                    current_input = Command(resume=resume_val)
+                    current_input = Command(resume="yes" if approved else "no")
                     continue
 
-            await _send_final_result(ws, snapshot.values, workspace)
-            conv.messages.append({
-                "role": "assistant",
-                "content": _build_summary_text(snapshot.values, workspace),
+            final = snapshot.values
+            summary = _build_summary_text(final, workspace)
+            files_info = _collect_files(final, workspace)
+            await _ws_send(ws, {
+                "type": "done",
+                "content": summary,
+                "status": final.get("final_status", "unknown"),
+                "stop_reason": final.get("stop_reason", ""),
+                "iterations": final.get("iteration", 0),
+                "files": files_info,
             })
+            conv.messages.append({"role": "assistant", "content": summary})
             return
 
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"[PIPELINE] Error: {exc}\n{tb}", flush=True)
-        await ws.send_text(json.dumps({
+        await _ws_send(ws, {
             "type": "error",
             "content": f"Pipeline error: {type(exc).__name__}: {exc}\n\n```\n{tb}\n```",
-        }))
+        })
 
 
 async def _wait_for_plan_decision(ws: WebSocket, conv: Conversation) -> bool:
@@ -439,10 +444,10 @@ async def _wait_for_plan_decision(ws: WebSocket, conv: Conversation) -> bool:
         approved = await asyncio.wait_for(future, timeout=600)
     except asyncio.TimeoutError:
         approved = False
-        await ws.send_text(json.dumps({
+        await _ws_send(ws, {
             "type": "error",
             "content": "Plan approval timed out after 10 minutes. Rejecting plan.",
-        }))
+        })
     finally:
         conv._pending_approval = None
         if not reader_task.done():
@@ -455,64 +460,77 @@ async def _wait_for_plan_decision(ws: WebSocket, conv: Conversation) -> bool:
     return approved
 
 
-async def _send_phase_update(ws: WebSocket, node: str, data: dict):
-    """Send a phase progress message to the UI."""
-    phase_map = {
-        "architect": {"icon": "\U0001f9e0", "label": "Architect", "color": "cyan"},
-        "approval_gate": {"icon": "⏸️", "label": "Approval", "color": "yellow"},
-        "developer": {"icon": "\U0001f4bb", "label": "Developer", "color": "green"},
-        "tester": {"icon": "\U0001f9ea", "label": "Tester", "color": "magenta"},
-        "reviewer": {"icon": "\U0001f50d", "label": "Reviewer", "color": "blue"},
-        "prepare_retry": {"icon": "\U0001f504", "label": "Retry", "color": "orange"},
-        "done": {"icon": "✅", "label": "Done", "color": "green"},
-        "failed": {"icon": "❌", "label": "Failed", "color": "red"},
-    }
+def _to_serializable(obj: object) -> object:
+    """Recursively convert any object to JSON-safe primitives."""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    if isinstance(obj, Path):
+        return str(obj)
+    if hasattr(obj, "model_dump"):
+        return _to_serializable(obj.model_dump())
+    if hasattr(obj, "__dict__"):
+        return _to_serializable(vars(obj))
+    return str(obj)
 
-    info = phase_map.get(node, {"icon": "•", "label": node, "color": "gray"})
 
-    detail = {}
+async def _ws_send(ws: WebSocket, msg: dict) -> bool:
+    """Send a JSON message over WebSocket with error handling."""
+    try:
+        payload = json.dumps(_to_serializable(msg))
+        await ws.send_text(payload)
+        print(f"[WS-SEND] type={msg.get('type')} len={len(payload)}", flush=True)
+        return True
+    except Exception as exc:
+        print(f"[WS-SEND] FAILED: {exc}", flush=True)
+        return False
+
+
+async def _send_agent_update(ws: WebSocket, node: str, data: dict):
+    """Send an agent_update message after a graph node completes."""
+    content = {}
     if node == "architect":
-        detail = {"plan": data.get("plan")}
+        content = data.get("plan") or {}
     elif node == "developer":
-        cb = data.get("code_bundle")
-        if cb:
-            detail = {"files": [f["path"] for f in cb.get("files", [])]}
+        cb = data.get("code_bundle") or {}
+        content = [f.get("path", "?") for f in cb.get("files", [])] if cb.get("files") else []
     elif node == "tester":
-        tr = data.get("test_result")
-        if tr:
-            detail = {
-                "passed": tr.get("passed", False),
-                "exit_code": tr.get("exit_code"),
-                "stderr": (tr.get("stderr") or "")[:1000],
-                "stdout": (tr.get("stdout") or "")[:500],
-            }
+        tr = data.get("test_result") or {}
+        content = {
+            "passed": tr.get("passed", False),
+            "exit_code": tr.get("exit_code"),
+            "stderr": (tr.get("stderr") or "")[:1000],
+            "stdout": (tr.get("stdout") or "")[:500],
+        }
     elif node == "reviewer":
-        rv = data.get("review")
-        if rv:
-            detail = {
-                "approved": rv.get("approved", False),
-                "summary": rv.get("summary", ""),
-                "comments": rv.get("comments", []),
-            }
+        rv = data.get("review") or {}
+        content = {
+            "approved": rv.get("approved", False),
+            "summary": rv.get("summary", ""),
+            "comments": rv.get("comments", []),
+        }
     elif node == "prepare_retry":
-        detail = {"iteration": data.get("iteration", 0)}
+        content = {"iteration": data.get("iteration", 0)}
+    elif node == "done":
+        content = {"final_status": "success"}
     elif node == "failed":
-        detail = {"reason": data.get("stop_reason", "")}
+        content = {"stop_reason": data.get("stop_reason", "")}
+    else:
+        content = {}
 
-    await ws.send_text(json.dumps({
-        "type": "phase",
-        "node": node,
-        "icon": info["icon"],
-        "label": info["label"],
-        "color": info["color"],
-        "iteration": data.get("iteration", 0),
-        "detail": detail,
-    }))
+    await _ws_send(ws, {
+        "type": "agent_update",
+        "agent": node,
+        "status": "done",
+        "content": content,
+    })
 
 
-async def _send_final_result(ws: WebSocket, state: dict, workspace: Path):
-    """Send the final pipeline result to the UI."""
-    status = state.get("final_status", "unknown")
+def _collect_files(state: dict, workspace: Path) -> list[dict]:
+    """Collect file info from pipeline state for the final result."""
     cb = state.get("code_bundle") or {}
     files_info = []
     for f in cb.get("files", []):
@@ -526,14 +544,7 @@ async def _send_final_result(ws: WebSocket, state: dict, workspace: Path):
             except Exception:
                 pass
         files_info.append({"path": f["path"], "size": size, "content": content})
-
-    await ws.send_text(json.dumps({
-        "type": "pipeline_done",
-        "status": status,
-        "stop_reason": state.get("stop_reason", ""),
-        "iterations": state.get("iteration", 0),
-        "files": files_info,
-    }))
+    return files_info
 
 
 def _build_summary_text(state: dict, workspace: Path) -> str:
