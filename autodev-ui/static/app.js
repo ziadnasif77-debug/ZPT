@@ -144,8 +144,9 @@ function disconnectWs() {
 
 function waitForWsReady() {
   return new Promise((resolve, reject) => {
-    if (!state.ws) { reject(new Error("No WebSocket")); return; }
-    if (state.ws.readyState === WebSocket.OPEN) { resolve(); return; }
+    const ws = state.ws;
+    if (!ws) { reject(new Error("No WebSocket")); return; }
+    if (ws.readyState === WebSocket.OPEN) { resolve(); return; }
 
     const onOpen = () => { cleanup(); resolve(); };
     const onError = (e) => { cleanup(); reject(e); };
@@ -154,14 +155,14 @@ function waitForWsReady() {
 
     function cleanup() {
       clearTimeout(timer);
-      state.ws.removeEventListener("open", onOpen);
-      state.ws.removeEventListener("error", onError);
-      state.ws.removeEventListener("close", onClose);
+      ws.removeEventListener("open", onOpen);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
     }
 
-    state.ws.addEventListener("open", onOpen);
-    state.ws.addEventListener("error", onError);
-    state.ws.addEventListener("close", onClose);
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
   });
 }
 
