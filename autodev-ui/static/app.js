@@ -429,11 +429,26 @@ function appendAgentCard(pipelineDiv, agent, status, content) {
   } else if (agent === "developer" && content) {
     const fileList = Array.isArray(content) ? content : (content.files || []);
     const modified = content.modified || [];
+    const innerIter = content.inner_iterations || 1;
+    const pkgReport = content.package_report;
     statusText = `wrote ${fileList.length} file(s)`;
     if (modified.length > 0 && modified.length < fileList.length) {
       statusText = `modified ${modified.length}/${fileList.length} file(s)`;
     }
-    detailHtml = `<div class="phase-files">${fileList.map(f => `<span class="phase-file-tag">${escapeHtml(typeof f === 'string' ? f : f.path || '?')}</span>`).join("")}</div>`;
+    if (innerIter > 1) {
+      statusText += ` (${innerIter} inner loops)`;
+    }
+    let pkgHtml = "";
+    if (pkgReport) {
+      const installed = (pkgReport.ready || []).length;
+      const missing = (pkgReport.install || []).length;
+      pkgHtml = `<div class="phase-summary">\u{1F4E6} Packages: ${installed} ready${missing > 0 ? `, ${missing} missing` : ""}</div>`;
+    }
+    let innerHtml = "";
+    if (innerIter > 1) {
+      innerHtml = `<div class="phase-summary">\u{1F504} Inner loop: ${innerIter} attempt(s) → clean</div>`;
+    }
+    detailHtml = pkgHtml + innerHtml + `<div class="phase-files">${fileList.map(f => `<span class="phase-file-tag">${escapeHtml(typeof f === 'string' ? f : f.path || '?')}</span>`).join("")}</div>`;
   } else if (agent === "tester" && content) {
     statusText = content.passed ? "PASSED" : "FAILED";
     if (content.stderr && !content.passed) {
@@ -469,6 +484,10 @@ function appendAgentCard(pipelineDiv, agent, status, content) {
     }
   } else if (agent === "prepare_retry") {
     statusText = `iteration ${content.iteration || "?"}`;
+    const surgicalPatches = content.surgical_patches || [];
+    if (surgicalPatches.length > 0) {
+      detailHtml = `<div class="phase-summary">\u{1F52C} Surgical patches: ${surgicalPatches.map(p => `<div style="margin-left:1em;font-size:0.85em">\u{1F527} ${escapeHtml(p)}</div>`).join("")}</div>`;
+    }
   } else if (agent === "done") {
     statusText = "complete";
   } else if (agent === "failed") {

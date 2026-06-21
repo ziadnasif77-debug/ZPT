@@ -73,6 +73,13 @@ class MemoryConfig(BaseModel):
     save_lessons: bool = True
 
 
+class PackagesConfig(BaseModel):
+    auto_install: bool = True
+    auto_update: bool = False
+    rebuild_on_install: bool = True
+    audit_before_run: bool = True
+
+
 class HITLConfig(BaseModel):
     approve_plan: bool = True
 
@@ -92,6 +99,7 @@ class AppConfig(BaseModel):
     git: GitConfig = Field(default_factory=GitConfig)
     error_graph: ErrorGraphConfig = Field(default_factory=ErrorGraphConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    packages: PackagesConfig = Field(default_factory=PackagesConfig)
     human_in_the_loop: HITLConfig = Field(default_factory=HITLConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     workspace_dir: str = "./workspace"

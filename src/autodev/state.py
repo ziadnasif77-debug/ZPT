@@ -28,6 +28,8 @@ class AutodevState(TypedDict, total=False):
 
     memory_context: str
     healer_fixes: Annotated[list[str], operator.add]
+    inner_iterations: int
+    package_report: dict | None
 
     final_status: str
     stop_reason: str

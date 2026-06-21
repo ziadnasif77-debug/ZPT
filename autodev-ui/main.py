@@ -347,6 +347,8 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         "modified_files": [],
         "memory_context": "",
         "healer_fixes": [],
+        "inner_iterations": 0,
+        "package_report": None,
     }
 
     await _ws_send(ws, {"type": "pipeline_start", "model": config.models.default})
@@ -530,9 +532,14 @@ async def _send_agent_update(ws: WebSocket, node: str, data: dict):
         cb = data.get("code_bundle") or {}
         modified = data.get("modified_files", [])
         file_list = [f.get("path", "?") for f in cb.get("files", [])] if cb.get("files") else []
-        content = file_list
-        if modified:
-            content = {"files": file_list, "modified": modified}
+        inner_iter = data.get("inner_iterations", 1)
+        pkg_report = data.get("package_report")
+        content = {
+            "files": file_list,
+            "modified": modified,
+            "inner_iterations": inner_iter,
+            "package_report": pkg_report,
+        }
     elif node == "tester":
         tr = data.get("test_result") or {}
         content = {
@@ -569,7 +576,15 @@ async def _send_agent_update(ws: WebSocket, node: str, data: dict):
     elif node == "memory_save":
         content = {"status": "saved"}
     elif node == "prepare_retry":
-        content = {"iteration": data.get("iteration", 0)}
+        content = {
+            "iteration": data.get("iteration", 0),
+            "surgical_patches": [],
+        }
+        feedback = data.get("feedback", "")
+        if "SURGICAL HEALER" in feedback:
+            import re
+            patches = re.findall(r"  - (.+)", feedback[:500])
+            content["surgical_patches"] = patches
     elif node == "done":
         content = {"final_status": "success"}
     elif node == "failed":

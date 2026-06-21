@@ -23,6 +23,7 @@ from autodev.deps import audit_dependencies, check_imports, pip_install_command,
 from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, diagnose_traceback
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
+from autodev.package_manager import AutonomousPackageManager
 from autodev.memory import (
     LessonRecord,
     Memory,
@@ -156,6 +157,7 @@ def build_graph(
 
     mem_config = MemoryConfig(**config.memory.model_dump()) if config.memory.enabled else MemoryConfig(enabled=False)
     memory = Memory(mem_config)
+    pkg_mgr = AutonomousPackageManager(config)
 
     # ── Memory Recall ─────────────────────────────────────────
     def memory_recall_node(state: AutodevState) -> dict:
@@ -216,9 +218,33 @@ def build_graph(
             }
         return {"plan_approved": True}
 
-    # ── Developer ──────────────────────────────────────────────
+    # ── Developer (self-healing inner loop) ─────────────────────
     def developer_node(state: AutodevState) -> dict:
+        workspace = Path(state.get("workspace_path", "./workspace"))
+
+        # Package audit before code generation
+        if config.packages.audit_before_run:
+            audit = pkg_mgr.auto_resolve(workspace)
+            pkg_report = {
+                "skip": audit.skip,
+                "ready": audit.ready,
+                "install": audit.install,
+                "local": audit.local,
+            }
+        else:
+            pkg_report = None
+
         result = developer.run(state, config, llm)
+        inner_iter = result.get("inner_iterations", 1)
+        print(f"[DEVELOPER] Completed in {inner_iter} inner iteration(s)", flush=True)
+
+        # Post-generation package audit (new imports may have appeared)
+        if config.packages.audit_before_run:
+            post_audit = pkg_mgr.auto_resolve(workspace)
+            if post_audit.install:
+                print(f"[PKG] Post-generation: still missing {post_audit.install}", flush=True)
+
+        result["package_report"] = pkg_report
         return result
 
     # ── Healer (deterministic, zero LLM) ──────────────────────
@@ -373,7 +399,7 @@ def build_graph(
         result = judge.run(state, config, llm)
         return result
 
-    # ── Prepare retry (feedback assembly) ─────────────────────
+    # ── Prepare retry (surgical healing + feedback assembly) ──
     def prepare_retry(state: AutodevState) -> dict:
         test_result = state.get("test_result") or {}
         review_data = state.get("review") or {}
@@ -383,6 +409,20 @@ def build_graph(
         feedback_parts: list[str] = []
         workspace = Path(state.get("workspace_path", "./workspace"))
         code_files = _read_py_files(workspace)
+
+        # Surgical healing: try to fix structural gaps before LLM retry
+        if not test_result.get("passed", False):
+            stderr_raw = test_result.get("stderr", "")
+            stdout_raw = test_result.get("stdout", "")
+            heal_result = developer.heal_until_passing(
+                workspace, stderr_raw, stdout_raw, llm,
+            )
+            if heal_result.get("patches_applied"):
+                patches = heal_result["patches_applied"]
+                feedback_parts.append(
+                    f"SURGICAL HEALER applied {len(patches)} patch(es):\n"
+                    + "\n".join(f"  - {p}" for p in patches)
+                )
 
         if debug_report.get("root_cause"):
             feedback_parts.append(f"ROOT CAUSE: {debug_report['root_cause']}")

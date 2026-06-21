@@ -54,6 +54,12 @@ memory:
   min_similarity: 0.7
   save_lessons: true
 
+packages:
+  auto_install: true
+  auto_update: false
+  rebuild_on_install: true
+  audit_before_run: true
+
 human_in_the_loop:
   approve_plan: true
 

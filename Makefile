@@ -1,4 +1,4 @@
-.PHONY: install run eval logs update-model clean build-sandbox memory-stats
+.PHONY: install run eval logs update-model clean build-sandbox memory-stats update-packages
 
 install:
 	pip install -e ".[dev]"
@@ -26,6 +26,9 @@ build-sandbox:
 
 memory-stats:
 	@python -c "from autodev.memory import Memory, MemoryConfig; from autodev.config import load_config; c = load_config(); m = Memory(MemoryConfig(**c.memory.model_dump())); s = m.get_stats(); print(f'Memory: {\"ON\" if s[\"available\"] else \"OFF\"}'); print(f'Solutions: {s[\"total_solutions\"]}'); print(f'Lessons: {s[\"total_lessons\"]}'); print(f'Success rate: {s[\"success_rate\"]}%'); print(f'Avg iterations: {s[\"avg_iterations\"]}')"
+
+update-packages:
+	@python -c "import sys; sys.path.insert(0, 'src'); from autodev.package_manager import AutonomousPackageManager; from autodev.config import load_config; c = load_config(); m = AutonomousPackageManager(c); print('Package manager initialized')"
 
 clean:
 	rm -rf workspace/* logs/* eval/results/*
