@@ -63,6 +63,18 @@ def extract_imports(source: str) -> set[str]:
     return modules
 
 
+def _local_module_names(workspace: Path) -> set[str]:
+    """Get all local module names: top-level .py files AND package directories."""
+    names: set[str] = set()
+    if not workspace.is_dir():
+        return names
+    names = {p.stem for p in workspace.glob("*.py")}
+    for d in workspace.iterdir():
+        if d.is_dir() and any(d.glob("*.py")):
+            names.add(d.name)
+    return names
+
+
 def check_imports(
     modules: set[str],
     workspace: Path | None = None,
@@ -74,9 +86,7 @@ def check_imports(
     - a local .py file in the workspace
     - pre-installed in the sandbox Docker image
     """
-    local_modules: set[str] = set()
-    if workspace and workspace.is_dir():
-        local_modules = {p.stem for p in workspace.glob("*.py")}
+    local_modules = _local_module_names(workspace) if workspace else set()
 
     missing: list[str] = []
     for mod in sorted(modules):
@@ -100,9 +110,7 @@ def resolve_packages(
 ) -> list[str]:
     """Map module names to pip package names, filtering out stdlib, local, and pre-installed."""
     declared = set(declared_deps or [])
-    local_modules: set[str] = set()
-    if workspace and workspace.is_dir():
-        local_modules = {p.stem for p in workspace.glob("*.py")}
+    local_modules = _local_module_names(workspace) if workspace else set()
 
     packages: set[str] = set()
     for mod in modules:
@@ -147,7 +155,7 @@ def pip_install_command(packages: list[str]) -> str | None:
 def audit_dependencies(workspace: Path) -> dict[str, list[str]]:
     """Classify all imports in workspace into builtin, preinstalled, local, and missing."""
     all_imports = scan_workspace(workspace)
-    local_modules = {p.stem for p in workspace.glob("*.py")} if workspace.is_dir() else set()
+    local_modules = _local_module_names(workspace)
 
     result: dict[str, list[str]] = {
         "builtin": [],

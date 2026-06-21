@@ -317,10 +317,13 @@ def build_graph(
         if iteration == 0 and plan_files and workspace.is_dir():
             allowed_basenames = {Path(p).name for p in plan_files}
             allowed_basenames.add("test_runner.py")
-            for py_file in list(workspace.glob("*.py")):
-                if py_file.name not in allowed_basenames:
-                    py_file.unlink()
-                    print(f"[SCOPE] Removed stale file: {py_file.name}", flush=True)
+            allowed_full = set(plan_files)
+            for py_file in list(workspace.rglob("*.py")):
+                rel = py_file.relative_to(workspace)
+                if str(rel) in allowed_full or py_file.name in allowed_basenames:
+                    continue
+                py_file.unlink()
+                print(f"[SCOPE] Removed stale file: {rel}", flush=True)
 
         # Package audit before code generation
         if config.packages.audit_before_run:

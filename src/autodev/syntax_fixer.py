@@ -18,6 +18,7 @@ def fix_syntax(source: str) -> str:
 
     fixed = source
     fixers = [
+        _fix_unterminated_strings_triple,
         _fix_unterminated_strings,
         _fix_mismatched_brackets,
         _fix_trailing_backslash,
@@ -36,6 +37,63 @@ def _is_valid(source: str) -> bool:
         return True
     except SyntaxError:
         return False
+
+
+def _fix_unterminated_strings_triple(source: str) -> str:
+    """Convert unterminated single/double-quoted strings to triple-quoted.
+
+    When a line has an odd number of quotes (meaning a string opened but
+    not closed on the same line), replace the opening quote with triple
+    quotes and find the closing quote on a later line, replacing it too.
+    """
+    lines = source.split("\n")
+    fixed_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        handled = False
+
+        for quote_char in ("'", '"'):
+            triple = quote_char * 3
+            if triple in line:
+                continue
+            count = _count_unescaped_quotes(line, quote_char)
+            if count % 2 != 0:
+                j = i + 1
+                close_line = -1
+                while j < len(lines):
+                    sub_count = _count_unescaped_quotes(lines[j], quote_char)
+                    if sub_count % 2 != 0:
+                        close_line = j
+                        break
+                    j += 1
+
+                if close_line >= 0:
+                    open_idx = line.find(quote_char)
+                    new_open = line[:open_idx] + triple + line[open_idx + 1:]
+                    fixed_lines.append(new_open)
+
+                    for k in range(i + 1, close_line):
+                        fixed_lines.append(lines[k])
+
+                    cl = lines[close_line]
+                    close_idx = cl.rfind(quote_char)
+                    new_close = cl[:close_idx] + triple + cl[close_idx + 1:]
+                    fixed_lines.append(new_close)
+
+                    i = close_line + 1
+                    handled = True
+                    break
+
+        if not handled:
+            fixed_lines.append(line)
+            i += 1
+
+    result = "\n".join(fixed_lines)
+    if _is_valid(result):
+        return result
+    return source
 
 
 def _fix_unterminated_strings(source: str) -> str:
