@@ -113,7 +113,10 @@ class AppConfig(BaseModel):
         return self
 
     def resolve_model(self, agent: str) -> str:
-        return getattr(self.agent_models, agent, self.models.default)
+        model = getattr(self.agent_models, agent, self.models.default)
+        if model == "default":
+            model = self.models.default
+        return model
 
     def get_token_budget(self, model: str) -> int:
         return self.context.max_tokens_per_model.get(model, 32000)

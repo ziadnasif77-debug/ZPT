@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from config import get_ollama_base_url
+from config import get_default_model, get_ollama_base_url
 
 
 async def check_health() -> bool:
@@ -21,17 +21,26 @@ async def check_health() -> bool:
 
 async def list_models() -> list[dict]:
     base = get_ollama_base_url()
+    default_model = get_default_model()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(f"{base}/api/tags")
             r.raise_for_status()
             data = r.json()
-            return [
-                {"name": m["name"], "size": m.get("size", 0)}
-                for m in data.get("models", [])
-            ]
-    except Exception:
-        return []
+            models_raw = data.get("models", [])
+            if not models_raw and isinstance(data, list):
+                models_raw = data
+            models = []
+            for m in models_raw:
+                if isinstance(m, dict) and "name" in m:
+                    models.append({"name": m["name"], "size": m.get("size", 0)})
+                elif isinstance(m, str):
+                    models.append({"name": m, "size": 0})
+            if models:
+                return models
+    except Exception as exc:
+        print(f"[ollama_client] Failed to fetch models: {exc}", flush=True)
+    return [{"name": default_model, "size": 0}]
 
 
 async def stream_chat(

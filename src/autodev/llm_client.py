@@ -131,6 +131,13 @@ class LLMClient:
         temperature: float = 0.2,
     ) -> str | T:
         model = self._config.resolve_model(agent)
+        if model == "default" or not model:
+            model = self._config.models.default
+        if model == "default" or not model:
+            raise ValueError(
+                f"Model name for agent '{agent}' resolved to '{model}'. "
+                f"Set a real model name (e.g. 'qwen2.5-coder:7b') in config.yaml models.default"
+            )
         budget = self._config.get_token_budget(model)
         prompt_tokens = estimate_messages_tokens(messages)
         if prompt_tokens > budget:

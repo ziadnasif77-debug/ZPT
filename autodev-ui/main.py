@@ -219,7 +219,9 @@ async def chat_ws(ws: WebSocket, cid: str):
                 continue
 
             mode = data.get("mode", "agent")
-            model = data.get("model", get_default_model())
+            model = data.get("model") or ""
+            if not model or model == "default":
+                model = get_default_model()
             user_content = data.get("content", "")
             file_context = data.get("files", [])
             print(f"[WS] Mode={mode}, Model={model}, Content={user_content[:100]}", flush=True)
@@ -310,11 +312,15 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         await _ws_send(ws, {"type": "error", "content": f"Failed to initialize pipeline: {exc}"})
         return
 
-    if model and model != config.models.default:
+    if model and model != "default" and model != config.models.default:
+        print(f"[PIPELINE] Overriding model: {config.models.default} -> {model}", flush=True)
         config.models.default = model
         for agent in ("product_manager", "architect", "developer", "tester",
                        "debugger", "reviewer", "judge"):
             setattr(config.agent_models, agent, model)
+    elif not model or model == "default":
+        model = config.models.default
+        print(f"[PIPELINE] Using default model: {model}", flush=True)
 
     import yaml
     config_path = Path(__file__).resolve().parent.parent / "config.yaml"
