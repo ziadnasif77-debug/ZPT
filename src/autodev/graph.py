@@ -55,6 +55,89 @@ def _run_healer(workspace: Path) -> dict[str, list[str]]:
     return report
 
 
+_FORBIDDEN_IMPORT_REPLACEMENTS: dict[str, str] = {
+    "pydantic": "dataclasses",
+}
+
+
+def _auto_replace_forbidden_imports(workspace: Path, missing: list[str]) -> bool:
+    """Try to replace forbidden third-party imports with stdlib equivalents.
+
+    Returns True if any file was modified.
+    """
+    import ast as _ast
+    import re as _re
+
+    fixed_any = False
+    for py_file in workspace.glob("*.py"):
+        try:
+            source = py_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        original = source
+        for mod in missing:
+            if mod not in source:
+                continue
+
+            if mod == "pydantic":
+                source = _re.sub(
+                    r'^from\s+pydantic\s+import\s+.*$',
+                    'from dataclasses import dataclass, field',
+                    source,
+                    flags=_re.MULTILINE,
+                )
+                source = _re.sub(
+                    r'^import\s+pydantic\b.*$',
+                    'from dataclasses import dataclass, field',
+                    source,
+                    flags=_re.MULTILINE,
+                )
+                source = source.replace('(BaseModel)', '')
+                source = source.replace('BaseModel', 'object')
+                source = _re.sub(
+                    r'^(\s*class\s+\w+)(?:\(object\))?(\s*:)',
+                    r'\1\2',
+                    source,
+                    flags=_re.MULTILINE,
+                )
+            else:
+                replacement = _FORBIDDEN_IMPORT_REPLACEMENTS.get(mod)
+                if replacement:
+                    source = _re.sub(
+                        rf'^(from\s+){_re.escape(mod)}(\s+import\s+)',
+                        rf'\g<1>{replacement}\g<2>',
+                        source,
+                        flags=_re.MULTILINE,
+                    )
+                    source = _re.sub(
+                        rf'^import\s+{_re.escape(mod)}\b.*$',
+                        f'import {replacement}',
+                        source,
+                        flags=_re.MULTILINE,
+                    )
+                else:
+                    source = _re.sub(
+                        rf'^from\s+{_re.escape(mod)}\s+import\s+.*$',
+                        f'# REMOVED: unavailable import {mod}',
+                        source,
+                        flags=_re.MULTILINE,
+                    )
+                    source = _re.sub(
+                        rf'^import\s+{_re.escape(mod)}\b.*$',
+                        f'# REMOVED: unavailable import {mod}',
+                        source,
+                        flags=_re.MULTILINE,
+                    )
+
+        if source != original:
+            py_file.write_text(source, encoding="utf-8")
+            print(f"[DEPS] Auto-replaced forbidden imports in {py_file.name}", flush=True)
+            fixed_any = True
+
+    return fixed_any
+
+
 def _read_py_files(workspace: Path) -> dict[str, str]:
     """Read all .py files in workspace into {filename: source}."""
     files: dict[str, str] = {}
@@ -288,6 +371,29 @@ def build_graph(
         print(f"[DEPS] preinstalled (skip): {audit['preinstalled']}", flush=True)
         print(f"[DEPS] local (skip): {audit['local']}", flush=True)
         print(f"[DEPS] missing: {audit['missing']}", flush=True)
+
+        if audit['missing']:
+            fixed_any = _auto_replace_forbidden_imports(workspace, audit['missing'])
+            if fixed_any:
+                audit = audit_dependencies(workspace)
+                print(f"[DEPS] After auto-fix, still missing: {audit['missing']}", flush=True)
+
+            if audit['missing']:
+                missing_str = ", ".join(audit['missing'])
+                error_msg = (
+                    f"ModuleNotFoundError: The following packages are not available "
+                    f"in the sandbox: {missing_str}. "
+                    f"Use only Python standard library modules. "
+                    f"Replace pydantic with dataclasses, requests with urllib.request, etc."
+                )
+                print(f"[DEPS] BLOCKED: {error_msg}", flush=True)
+                return {"test_result": {
+                    "passed": False,
+                    "exit_code": 1,
+                    "stdout": "",
+                    "stderr": error_msg,
+                    "test_summary": f"Blocked: forbidden imports {missing_str}",
+                }}
 
         imports = scan_workspace(workspace)
         plan = state.get("plan") or {}
