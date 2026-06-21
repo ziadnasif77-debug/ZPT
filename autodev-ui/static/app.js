@@ -68,19 +68,35 @@ async function loadModels() {
     const r = await fetch("/api/models");
     const d = await r.json();
     sel.innerHTML = "";
-    if (d.models.length === 0) {
-      sel.innerHTML = `<option>No models found</option>`;
+    const defaultModel = d.default || "qwen2.5-coder:7b";
+    if (!d.models || d.models.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = defaultModel;
+      opt.textContent = defaultModel;
+      sel.appendChild(opt);
       return;
     }
+    let hasDefault = false;
     for (const m of d.models) {
       const opt = document.createElement("option");
       opt.value = m.name;
       opt.textContent = m.name;
-      if (m.name === d.default) opt.selected = true;
+      if (m.name === defaultModel) { opt.selected = true; hasDefault = true; }
       sel.appendChild(opt);
     }
+    if (!hasDefault) {
+      const opt = document.createElement("option");
+      opt.value = defaultModel;
+      opt.textContent = defaultModel + " (config default)";
+      opt.selected = true;
+      sel.prepend(opt);
+    }
   } catch {
-    sel.innerHTML = `<option>Error loading models</option>`;
+    sel.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "qwen2.5-coder:7b";
+    opt.textContent = "qwen2.5-coder:7b";
+    sel.appendChild(opt);
   }
 }
 
@@ -224,9 +240,14 @@ async function sendMessage() {
   state.attachedFiles = [];
   renderFileTags();
 
+  let selectedModel = $("#model-select").value || "";
+  if (!selectedModel || selectedModel === "default" || selectedModel.startsWith("No models") || selectedModel.startsWith("Error")) {
+    selectedModel = "";
+  }
+
   const payload = {
     content,
-    model: $("#model-select").value,
+    model: selectedModel,
     files,
     mode: state.mode,
   };

@@ -220,8 +220,10 @@ async def chat_ws(ws: WebSocket, cid: str):
 
             mode = data.get("mode", "agent")
             model = data.get("model") or ""
-            if not model or model == "default":
+            _INVALID_MODEL_NAMES = {"", "default", "No models found", "Error loading models"}
+            if not model or model in _INVALID_MODEL_NAMES:
                 model = get_default_model()
+                print(f"[WS] Invalid model name received, using default: {model}", flush=True)
             user_content = data.get("content", "")
             file_context = data.get("files", [])
             print(f"[WS] Mode={mode}, Model={model}, Content={user_content[:100]}", flush=True)
@@ -312,13 +314,14 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         await _ws_send(ws, {"type": "error", "content": f"Failed to initialize pipeline: {exc}"})
         return
 
-    if model and model != "default" and model != config.models.default:
+    _BAD_NAMES = {"", "default", "No models found", "Error loading models"}
+    if model and model not in _BAD_NAMES and model != config.models.default:
         print(f"[PIPELINE] Overriding model: {config.models.default} -> {model}", flush=True)
         config.models.default = model
         for agent in ("product_manager", "architect", "developer", "tester",
                        "debugger", "reviewer", "judge"):
             setattr(config.agent_models, agent, model)
-    elif not model or model == "default":
+    else:
         model = config.models.default
         print(f"[PIPELINE] Using default model: {model}", flush=True)
 
