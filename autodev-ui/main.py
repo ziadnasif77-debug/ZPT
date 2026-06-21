@@ -94,6 +94,23 @@ async def models():
     return {"models": model_list, "default": get_default_model()}
 
 
+@app.get("/api/memory/stats")
+async def memory_stats():
+    try:
+        import sys
+        src_path = str(Path(__file__).resolve().parent.parent / "src")
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        from autodev.memory import Memory, MemoryConfig
+        from autodev.config import load_config
+        config = load_config()
+        mem_config = MemoryConfig(**config.memory.model_dump()) if config.memory.enabled else MemoryConfig(enabled=False)
+        mem = Memory(mem_config)
+        return mem.get_stats()
+    except Exception as e:
+        return {"available": False, "error": str(e), "total_solutions": 0, "total_lessons": 0, "success_rate": 0}
+
+
 @app.get("/api/conversations")
 async def list_conversations():
     return [
@@ -328,6 +345,8 @@ async def _run_agent_pipeline(ws: WebSocket, conv: Conversation, request: str, m
         "stop_reason": "",
         "feedback": "",
         "modified_files": [],
+        "memory_context": "",
+        "healer_fixes": [],
     }
 
     await _ws_send(ws, {"type": "pipeline_start", "model": config.models.default})
@@ -543,8 +562,12 @@ async def _send_agent_update(ws: WebSocket, node: str, data: dict):
             "reason": jd.get("reason", ""),
             "strategy": jd.get("strategy", ""),
         }
+    elif node == "memory_recall":
+        content = {"memory_context": (data.get("memory_context") or "")[:500]}
     elif node == "healer":
-        content = {"status": "healed"}
+        content = {"status": "healed", "fixes": data.get("healer_fixes", [])}
+    elif node == "memory_save":
+        content = {"status": "saved"}
     elif node == "prepare_retry":
         content = {"iteration": data.get("iteration", 0)}
     elif node == "done":

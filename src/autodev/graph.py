@@ -1,7 +1,9 @@
-"""LangGraph orchestration — 7-agent pipeline with git, error graph, and escalation.
+"""LangGraph orchestration — pipeline with memory, healer, git, error graph, and escalation.
 
-Flow: Product Manager → Architect → [approval] → Developer → [git commit] →
-      Tester → [if failed] Debugger → Reviewer → Judge → [ACCEPT/REJECT/ROLLBACK/ESCALATE]
+Flow: Memory Recall → Product Manager → Architect → [approval] → Developer →
+      Healer → Tester → [if failed] Debugger → Reviewer → Judge →
+      [ACCEPT] → Memory Save → Done
+      [REJECT] → Prepare Retry → Developer
 """
 
 from __future__ import annotations
@@ -21,6 +23,13 @@ from autodev.deps import audit_dependencies, check_imports, pip_install_command,
 from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, diagnose_traceback
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
+from autodev.memory import (
+    LessonRecord,
+    Memory,
+    MemoryConfig,
+    SolutionRecord,
+    format_memory_context,
+)
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
 
@@ -96,6 +105,44 @@ def _preflight_validate(workspace: Path) -> dict | None:
     return None
 
 
+def _classify_error_type(stderr: str) -> str:
+    """Classify an error from stderr into a category."""
+    text = stderr.lower()
+    if "syntaxerror" in text or "syntax error" in text:
+        return "syntax"
+    if "importerror" in text or "modulenotfounderror" in text:
+        return "import"
+    if "nameerror" in text:
+        return "name"
+    if "typeerror" in text:
+        return "type"
+    if "attributeerror" in text:
+        return "attribute"
+    if "assertionerror" in text or "assert" in text:
+        return "logic"
+    if "indexerror" in text:
+        return "index"
+    if "keyerror" in text:
+        return "key"
+    return "runtime"
+
+
+def _extract_avoid_pattern(stderr: str) -> str:
+    """Extract a concise 'avoid this' pattern from stderr."""
+    import re
+    m = re.search(r"(SyntaxError|ImportError|NameError|TypeError|AttributeError|ModuleNotFoundError):\s*(.+?)(?:\n|$)", stderr)
+    if m:
+        return f"Don't cause {m.group(1)}: {m.group(2).strip()[:150]}"
+    if "getvalue" in stderr.lower():
+        return "Don't use sys.stdout.getvalue() — use io.StringIO instead"
+    if "unexpected keyword" in stderr.lower():
+        return "Don't pass wrong keyword arguments — check method signatures match"
+    lines = stderr.strip().split("\n")
+    if lines:
+        return f"Avoid: {lines[-1][:150]}"
+    return "Unknown error pattern"
+
+
 def build_graph(
     config: "AppConfig",
     llm: "LLMClient",
@@ -107,10 +154,43 @@ def build_graph(
     eg_path = config.error_graph.path if config.error_graph.enabled else None
     error_graph = ErrorGraph(persist_path=eg_path)
 
+    mem_config = MemoryConfig(**config.memory.model_dump()) if config.memory.enabled else MemoryConfig(enabled=False)
+    memory = Memory(mem_config)
+
+    # ── Memory Recall ─────────────────────────────────────────
+    def memory_recall_node(state: AutodevState) -> dict:
+        if not memory.is_available:
+            return {"memory_context": ""}
+
+        request = state.get("user_request", "")
+        if not request:
+            return {"memory_context": ""}
+
+        solutions = memory.recall_solutions(request)
+        lessons = memory.recall_lessons(request)
+
+        if not solutions and not lessons:
+            print("[MEMORY] No relevant memories found", flush=True)
+            return {"memory_context": ""}
+
+        context = format_memory_context(solutions, lessons)
+        print(f"[MEMORY] Recalled {len(solutions)} solution(s), {len(lessons)} lesson(s)", flush=True)
+        return {"memory_context": context}
+
     # ── Product Manager ───────────────────────────────────────
     def product_manager_node(state: AutodevState) -> dict:
         error_graph.reset()
-        return product_manager.run(state, config, llm)
+        result = product_manager.run(state, config, llm)
+
+        # If memory has past solutions for similar tasks, inject into spec
+        mem_ctx = state.get("memory_context", "")
+        if mem_ctx and result.get("product_spec"):
+            spec = result["product_spec"]
+            if not spec.get("notes"):
+                spec["notes"] = ""
+            spec["notes"] += f"\n\n{mem_ctx}"
+
+        return result
 
     # ── Architect ──────────────────────────────────────────────
     def architect_node(state: AutodevState) -> dict:
@@ -152,11 +232,16 @@ def build_graph(
             if sha:
                 print(f"[GIT] Committed attempt {iteration}: {sha[:8]}", flush=True)
 
-        total_fixes = sum(len(v) for k, v in report.items() if k != "compile_errors")
+        fix_descriptions: list[str] = []
+        for category, files in report.items():
+            if files and category != "compile_errors":
+                fix_descriptions.append(f"{category}: {', '.join(files)}")
+
+        total_fixes = len(fix_descriptions)
         if total_fixes > 0:
             print(f"[HEALER] Applied {total_fixes} fix(es) before testing", flush=True)
 
-        return {}
+        return {"healer_fixes": fix_descriptions}
 
     # ── Tester ─────────────────────────────────────────────────
     def tester_node(state: AutodevState) -> dict:
@@ -410,6 +495,46 @@ def build_graph(
             "attempt_history": [attempt.model_dump()],
         }
 
+    # ── Memory Save (after ACCEPT) ────────────────────────────
+    def memory_save_node(state: AutodevState) -> dict:
+        if not memory.is_available:
+            return {}
+
+        from datetime import datetime as _dt
+
+        cb = state.get("code_bundle") or {}
+        files = cb.get("files", [])
+
+        record = SolutionRecord(
+            task=state.get("user_request", ""),
+            product_spec=state.get("product_spec"),
+            plan=state.get("plan"),
+            files=files,
+            iterations_needed=state.get("iteration", 0),
+            healer_fixes=state.get("healer_fixes", []),
+            timestamp=_dt.now().isoformat(),
+            model_used=config.models.default,
+        )
+        memory.save_solution(record)
+
+        # Save lessons from any failed attempts in this run
+        for attempt in state.get("attempt_history", []):
+            tr = attempt.get("test_result") or {}
+            rv = attempt.get("review") or {}
+            if not tr.get("passed", True):
+                stderr = tr.get("stderr", "")
+                lesson = LessonRecord(
+                    error_type=_classify_error_type(stderr),
+                    what_went_wrong=stderr[:300] if stderr else rv.get("summary", "")[:300],
+                    what_fixed_it="Fixed in subsequent iteration",
+                    avoid_this=_extract_avoid_pattern(stderr),
+                    task_context=state.get("user_request", ""),
+                    timestamp=_dt.now().isoformat(),
+                )
+                memory.save_lesson(lesson)
+
+        return {}
+
     # ── Done node ──────────────────────────────────────────────
     def done_node(state: AutodevState) -> dict:
         return {"final_status": "success", "stop_reason": "Approved by reviewer and judge"}
@@ -477,6 +602,7 @@ def build_graph(
         return "retry"
 
     # ── Build the graph ────────────────────────────────────────
+    graph.add_node("memory_recall", memory_recall_node)
     graph.add_node("product_manager", product_manager_node)
     graph.add_node("architect", architect_node)
     graph.add_node("approval_gate", approval_gate)
@@ -487,10 +613,12 @@ def build_graph(
     graph.add_node("reviewer", reviewer_node)
     graph.add_node("judge", judge_node)
     graph.add_node("prepare_retry", prepare_retry)
+    graph.add_node("memory_save", memory_save_node)
     graph.add_node("done", done_node)
     graph.add_node("failed", failed_node)
 
-    graph.add_edge(START, "product_manager")
+    graph.add_edge(START, "memory_recall")
+    graph.add_edge("memory_recall", "product_manager")
     graph.add_edge("product_manager", "architect")
     graph.add_edge("architect", "approval_gate")
     graph.add_conditional_edges("approval_gate", route_after_approval)
@@ -502,9 +630,10 @@ def build_graph(
     graph.add_conditional_edges(
         "judge",
         route_after_judge,
-        {"done": "done", "failed": "failed", "retry": "prepare_retry"},
+        {"done": "memory_save", "failed": "failed", "retry": "prepare_retry"},
     )
     graph.add_edge("prepare_retry", "developer")
+    graph.add_edge("memory_save", "done")
     graph.add_edge("done", END)
     graph.add_edge("failed", END)
 

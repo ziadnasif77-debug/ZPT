@@ -64,6 +64,15 @@ class ErrorGraphConfig(BaseModel):
     escalate_after: int = 5
 
 
+class MemoryConfig(BaseModel):
+    enabled: bool = True
+    db_path: str = "./memory_db"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    top_k: int = 3
+    min_similarity: float = 0.7
+    save_lessons: bool = True
+
+
 class HITLConfig(BaseModel):
     approve_plan: bool = True
 
@@ -82,6 +91,7 @@ class AppConfig(BaseModel):
     loop: LoopConfig = Field(default_factory=LoopConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     error_graph: ErrorGraphConfig = Field(default_factory=ErrorGraphConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     human_in_the_loop: HITLConfig = Field(default_factory=HITLConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     workspace_dir: str = "./workspace"

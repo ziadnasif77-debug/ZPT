@@ -41,6 +41,10 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
     if error_graph_ctx:
         user_parts.append(f"## Error History\n{error_graph_ctx}")
 
+    memory_ctx = state.get("memory_context", "")
+    if memory_ctx:
+        user_parts.append(memory_ctx)
+
     if is_retry:
         workspace = Path(state.get("workspace_path", "./workspace"))
         existing_code = _read_current_code(workspace, plan)

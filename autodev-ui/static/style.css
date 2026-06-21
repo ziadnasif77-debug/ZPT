@@ -114,6 +114,7 @@ body { display: flex; overflow: hidden; }
 .status-badge.online { background: rgba(34,197,94,0.15); color: var(--success); }
 .status-badge.offline { background: rgba(239,68,68,0.15); color: var(--danger); }
 .status-badge.checking { background: rgba(148,163,184,0.15); color: var(--text-secondary); }
+.memory-badge { background: rgba(168,85,247,0.15); color: var(--purple); cursor: help; }
 
 /* ── Main ────────────────────────────────────────────── */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

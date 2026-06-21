@@ -46,6 +46,14 @@ error_graph:
   path: "./logs/error_graph.json"
   escalate_after: 5
 
+memory:
+  enabled: true
+  db_path: "./memory_db"
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 3
+  min_similarity: 0.7
+  save_lessons: true
+
 human_in_the_loop:
   approve_plan: true
 

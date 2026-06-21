@@ -16,8 +16,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   checkOllamaHealth();
   loadModels();
   loadConversations();
+  loadMemoryStats();
   setupEventListeners();
   setInterval(checkOllamaHealth, 30000);
+  setInterval(loadMemoryStats, 60000);
 });
 
 /* ── Health Check ──────────────────────────────────────── */
@@ -36,6 +38,26 @@ async function checkOllamaHealth() {
   } catch {
     badge.textContent = "Server Error";
     badge.className = "status-badge offline";
+  }
+}
+
+/* ── Memory Stats ─────────────────────────────────────── */
+async function loadMemoryStats() {
+  const el = $("#memory-stats");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/memory/stats");
+    const d = await r.json();
+    if (d.available) {
+      el.innerHTML = `\u{1F9E0} ${d.total_solutions} memories &middot; \u{2705} ${d.success_rate}% success`;
+      el.title = `Solutions: ${d.total_solutions} | Lessons: ${d.total_lessons} | Avg iterations: ${d.avg_iterations}`;
+      el.style.display = "block";
+    } else {
+      el.innerHTML = `\u{1F9E0} Memory off`;
+      el.style.display = "block";
+    }
+  } catch {
+    if (el) el.style.display = "none";
   }
 }
 
@@ -363,8 +385,9 @@ function appendPipelineStart(model) {
 }
 
 const AGENT_INFO = {
+  memory_recall: { icon: "\u{1F9E0}", label: "Memory",     color: "purple" },
   product_manager: { icon: "\u{1F4CB}", label: "Product Mgr", color: "purple" },
-  architect:     { icon: "\u{1F9E0}", label: "Architect",  color: "cyan" },
+  architect:     { icon: "\u{1F4D0}", label: "Architect",  color: "cyan" },
   approval_gate: { icon: "⻾️", label: "Approval",   color: "yellow" },
   developer:     { icon: "\u{1F4BB}", label: "Developer",  color: "green" },
   healer:        { icon: "\u{1FA79}", label: "Healer",     color: "cyan" },
@@ -373,6 +396,7 @@ const AGENT_INFO = {
   reviewer:      { icon: "\u{1F50D}", label: "Reviewer",   color: "blue" },
   judge:         { icon: "⚖️", label: "Judge",      color: "gold" },
   prepare_retry: { icon: "\u{1F504}", label: "Retry",      color: "orange" },
+  memory_save:   { icon: "\u{1F4BE}", label: "Save Memory", color: "purple" },
   done:          { icon: "✅",    label: "Done",        color: "green" },
   failed:        { icon: "❌",    label: "Failed",      color: "red" },
 };
@@ -695,7 +719,7 @@ function renderMessages(messages) {
       <h2>AutoDev Chat</h2>
       <p>Local AI dev team powered by Ollama. Describe what you want to build.</p>
       <div class="welcome-modes">
-        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 8-agent pipeline (PM &rarr; Architect &rarr; Developer &rarr; Healer &rarr; Tester &rarr; Debugger &rarr; Reviewer &rarr; Judge)</div>
+        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; Memory &rarr; PM &rarr; Architect &rarr; Developer &rarr; Healer &rarr; Tester &rarr; Debugger &rarr; Reviewer &rarr; Judge &rarr; Save</div>
         <div class="welcome-mode"><strong>Chat Mode</strong> &mdash; Direct conversation with Ollama</div>
       </div>
     </div>`;

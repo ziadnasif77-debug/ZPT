@@ -41,6 +41,10 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
         if existing:
             context_parts.append(f"## Existing Files in Workspace\n{', '.join(existing)}")
 
+    memory_ctx = state.get("memory_context", "")
+    if memory_ctx:
+        context_parts.append(memory_ctx)
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": "\n\n".join(context_parts)},

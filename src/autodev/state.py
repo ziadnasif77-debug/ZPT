@@ -26,6 +26,9 @@ class AutodevState(TypedDict, total=False):
     error_hashes: Annotated[list[str], operator.add]
     error_graph_context: str
 
+    memory_context: str
+    healer_fixes: Annotated[list[str], operator.add]
+
     final_status: str
     stop_reason: str
     feedback: str
