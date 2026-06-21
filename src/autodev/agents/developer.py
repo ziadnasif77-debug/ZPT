@@ -223,41 +223,44 @@ def _self_review(workspace: Path, code_bundle: CodeBundle) -> list[dict]:
     all_classes: dict[str, list[str]] = {}
     all_files: dict[str, str] = {}
 
-    for py_file in workspace.glob("*.py"):
+    for py_file in workspace.rglob("*.py"):
+        rel_path = str(py_file.relative_to(workspace))
         try:
             source = py_file.read_text(encoding="utf-8")
-            all_files[py_file.name] = source
+            all_files[rel_path] = source
         except Exception:
             continue
 
-        # Run text-based checks first (work even on broken code)
-        _check_fstring_quotes(py_file.name, source, issues)
+        _check_fstring_quotes(rel_path, source, issues)
 
-        # 1. AST parse check
         try:
             tree = ast.parse(source)
-        except SyntaxError as e:
-            issues.append({
-                "file": py_file.name,
-                "line": e.lineno or 0,
-                "type": "syntax",
-                "description": f"{py_file.name}:{e.lineno}: SyntaxError: {e.msg}",
-                "auto_fixable": True,
-            })
-            _check_missing_imports_regex(py_file.name, source, issues)
-            continue
+        except SyntaxError:
+            fixed = fix_syntax(source)
+            if fixed != source:
+                py_file.write_text(fixed, encoding="utf-8")
+                source = fixed
+            try:
+                tree = ast.parse(source)
+            except SyntaxError as e:
+                issues.append({
+                    "file": rel_path,
+                    "line": e.lineno or 0,
+                    "type": "syntax",
+                    "description": f"{rel_path}:{e.lineno}: SyntaxError: {e.msg}",
+                    "auto_fixable": True,
+                })
+                _check_missing_imports_regex(rel_path, source, issues)
+                continue
 
-        # 2. Check all names are imported
-        _check_undefined_names(py_file.name, source, tree, issues)
+        _check_undefined_names(rel_path, source, tree, issues)
 
-        # 4. Collect class methods for cross-file checking
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
                 all_classes[node.name] = methods
 
-        # 5. Check __main__ block if file seems like an entry point
-        _check_main_block(py_file.name, source, tree, issues)
+        _check_main_block(rel_path, source, tree, issues)
 
     # 6. Cross-file: check test references match actual exports
     _check_test_exports(all_files, all_classes, issues)
@@ -526,7 +529,7 @@ def _auto_fix(workspace: Path, issues: list[dict]) -> int:
     """Auto-fix issues that are marked as auto_fixable."""
     fixed_count = 0
 
-    for py_file in workspace.glob("*.py"):
+    for py_file in workspace.rglob("*.py"):
         try:
             source = py_file.read_text(encoding="utf-8")
             original = source
@@ -536,6 +539,7 @@ def _auto_fix(workspace: Path, issues: list[dict]) -> int:
             source = fix_imports(source)
             source = fix_import_style(source)
             source = fix_kwarg_mismatches(source)
+            source = _fix_missing_typing_imports(source)
 
             if source != original:
                 py_file.write_text(source, encoding="utf-8")
@@ -550,44 +554,124 @@ def _auto_fix(workspace: Path, issues: list[dict]) -> int:
     return fixed_count
 
 
+def _fix_missing_typing_imports(source: str) -> str:
+    """Auto-add 'from typing import ...' for typing names used but not imported."""
+    _TYPING_NAMES = {"List", "Dict", "Set", "Tuple", "Optional", "Union", "Any",
+                     "Callable", "Type", "Sequence", "Mapping", "Iterator", "Generator"}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+
+    imported: set[str] = set()
+    used: set[str] = set()
+    typing_import_line: int | None = None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "typing":
+            typing_import_line = node.lineno
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.names:
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Name) and node.id in _TYPING_NAMES:
+            used.add(node.id)
+        elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in _TYPING_NAMES:
+            used.add(node.value.id)
+
+    missing = sorted(used - imported)
+    if not missing:
+        return source
+
+    lines = source.splitlines(keepends=True)
+    import_stmt = f"from typing import {', '.join(missing)}\n"
+
+    if typing_import_line is not None:
+        old_line = lines[typing_import_line - 1]
+        existing_names = old_line.split("import")[1].strip().rstrip("\n")
+        all_names = sorted(set(existing_names.replace(" ", "").split(",")) | set(missing))
+        lines[typing_import_line - 1] = f"from typing import {', '.join(all_names)}\n"
+    else:
+        insert_at = 0
+        for i, line in enumerate(lines):
+            if line.startswith("import ") or line.startswith("from "):
+                insert_at = i
+                break
+            elif line.strip() and not line.startswith("#") and not line.startswith('"""') and not line.startswith("'''"):
+                insert_at = i
+                break
+        lines.insert(insert_at, import_stmt)
+
+    return "".join(lines)
+
+
 def _validate(workspace: Path) -> dict:
-    """Validate all files: py_compile + AST parse + import resolution."""
+    """Validate all files: py_compile + AST parse + import resolution + typing check."""
     errors: list[str] = []
     all_passed = True
 
     local_modules = {p.stem for p in workspace.glob("*.py")}
+    for d in workspace.iterdir():
+        if d.is_dir() and any(d.glob("*.py")):
+            local_modules.add(d.name)
 
-    for py_file in workspace.glob("*.py"):
-        # py_compile check
+    for py_file in workspace.rglob("*.py"):
+        source = py_file.read_text(encoding="utf-8")
+        rel_path = str(py_file.relative_to(workspace))
+
         try:
-            py_compile.compile(str(py_file), doraise=True)
-        except py_compile.PyCompileError as e:
-            errors.append(f"compile: {py_file.name}: {e}")
-            all_passed = False
-            continue
+            ast.parse(source)
+        except SyntaxError:
+            fixed = fix_syntax(source)
+            if fixed != source:
+                py_file.write_text(fixed, encoding="utf-8")
+                source = fixed
+                try:
+                    ast.parse(fixed)
+                except SyntaxError as e2:
+                    errors.append(f"syntax: {rel_path}:{e2.lineno}: {e2.msg}")
+                    all_passed = False
+                    continue
+            else:
+                try:
+                    ast.parse(source)
+                except SyntaxError as e:
+                    errors.append(f"syntax: {rel_path}:{e.lineno}: {e.msg}")
+                    all_passed = False
+                    continue
 
-        # AST parse check
-        try:
-            source = py_file.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-        except SyntaxError as e:
-            errors.append(f"syntax: {py_file.name}:{e.lineno}: {e.msg}")
-            all_passed = False
-            continue
+        tree = ast.parse(source)
 
-        # Import resolution check
+        imported_names: set[str] = set()
+        used_typing_names: set[str] = set()
+        _TYPING_NAMES = {"List", "Dict", "Set", "Tuple", "Optional", "Union", "Any", "Callable", "Type", "Sequence", "Mapping", "Iterator", "Generator"}
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    imported_names.add(alias.asname or alias.name.split(".")[0])
                     mod = alias.name.split(".")[0]
                     if not _can_resolve_import(mod, local_modules):
-                        errors.append(f"import: {py_file.name}: cannot resolve '{alias.name}'")
+                        errors.append(f"import: {rel_path}: cannot resolve '{alias.name}'")
                         all_passed = False
             elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                 mod = node.module.split(".")[0]
+                if node.names:
+                    for alias in node.names:
+                        imported_names.add(alias.asname or alias.name)
                 if not _can_resolve_import(mod, local_modules):
-                    errors.append(f"import: {py_file.name}: cannot resolve 'from {node.module}'")
+                    errors.append(f"import: {rel_path}: cannot resolve 'from {node.module}'")
                     all_passed = False
+            elif isinstance(node, ast.Name) and node.id in _TYPING_NAMES:
+                used_typing_names.add(node.id)
+            elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in _TYPING_NAMES:
+                used_typing_names.add(node.value.id)
+
+        missing_typing = used_typing_names - imported_names
+        if missing_typing:
+            errors.append(f"typing: {rel_path}: used {', '.join(sorted(missing_typing))} without importing from typing")
+            all_passed = False
 
     return {"passed": all_passed, "errors": errors}
 
@@ -622,6 +706,14 @@ def _extract_lesson(errors: list[str], issues: list[dict]) -> str:
     unfixed = [i for i in issues if not i.get("auto_fixed")]
     for issue in unfixed:
         parts.append(f"  - {issue['description']}")
+
+    combined = " ".join(errors).lower()
+    if "typing:" in combined or "list" in combined or "dict" in combined:
+        parts.append("\nREMINDER: If you use List, Dict, Optional, etc., you MUST add: from typing import List, Dict, Optional")
+    if "unterminated string" in combined or "syntaxerror" in combined:
+        parts.append("\nREMINDER: For multi-line strings, use triple quotes (''' or \"\"\"). NEVER put a real newline inside single quotes.")
+    if "cannot resolve" in combined:
+        parts.append("\nREMINDER: If you import from a local module (e.g., from project_mapper import X), make sure that file exists and the name is correct.")
 
     return "\n".join(parts)
 

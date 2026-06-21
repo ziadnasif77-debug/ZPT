@@ -139,13 +139,14 @@ def _auto_replace_forbidden_imports(workspace: Path, missing: list[str]) -> bool
 
 
 def _read_py_files(workspace: Path) -> dict[str, str]:
-    """Read all .py files in workspace into {filename: source}."""
+    """Read all .py files in workspace into {relative_path: source}."""
     files: dict[str, str] = {}
     if not workspace.is_dir():
         return files
-    for py_file in workspace.glob("*.py"):
+    for py_file in workspace.rglob("*.py"):
         try:
-            files[py_file.name] = py_file.read_text(encoding="utf-8")
+            rel = str(py_file.relative_to(workspace))
+            files[rel] = py_file.read_text(encoding="utf-8")
         except Exception:
             pass
     return files
@@ -154,6 +155,7 @@ def _read_py_files(workspace: Path) -> dict[str, str]:
 def _preflight_validate(workspace: Path) -> dict | None:
     """Statically validate code before the sandbox runs."""
     import ast as _ast
+    from autodev.syntax_fixer import fix_syntax as _fix_syntax
 
     files = _read_py_files(workspace)
     if not files:
@@ -162,15 +164,23 @@ def _preflight_validate(workspace: Path) -> dict | None:
     for name, source in files.items():
         try:
             _ast.parse(source)
-        except SyntaxError as exc:
-            return {
-                "passed": False,
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f'File "{name}", line {exc.lineno}\nSyntaxError: {exc.msg}',
-                "test_summary": "pre-flight: syntax error",
-                "duration_seconds": 0.0,
-            }
+        except SyntaxError:
+            fixed = _fix_syntax(source)
+            if fixed != source:
+                (workspace / name).write_text(fixed, encoding="utf-8")
+                print(f"[PREFLIGHT] Auto-fixed syntax in {name}", flush=True)
+                source = fixed
+            try:
+                _ast.parse(source)
+            except SyntaxError as exc:
+                return {
+                    "passed": False,
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": f'File "{name}", line {exc.lineno}\nSyntaxError: {exc.msg}',
+                    "test_summary": "pre-flight: syntax error",
+                    "duration_seconds": 0.0,
+                }
 
     test_source = ""
     test_name = "test_runner.py"
@@ -324,6 +334,16 @@ def build_graph(
                     continue
                 py_file.unlink()
                 print(f"[SCOPE] Removed stale file: {rel}", flush=True)
+
+        # Ensure __init__.py exists for any subdirectory packages in the plan
+        for pf in plan_files:
+            if "/" in pf:
+                pkg_dir = workspace / Path(pf).parent
+                pkg_dir.mkdir(parents=True, exist_ok=True)
+                init_file = pkg_dir / "__init__.py"
+                if not init_file.exists():
+                    init_file.write_text("", encoding="utf-8")
+                    print(f"[SCOPE] Created {Path(pf).parent}/__init__.py", flush=True)
 
         # Package audit before code generation
         if config.packages.audit_before_run:
@@ -666,8 +686,27 @@ def build_graph(
         retry_target = "developer"
         diag_culprit = debug_report.get("culprit", "")
         test_summary = test_result.get("test_summary", "")
+        test_stderr = test_result.get("stderr", "")
+
         if diag_culprit == "tester" or "pre-flight: syntax" in test_summary:
             retry_target = "tester"
+
+        if "modulenotfounderror" in test_stderr.lower() or "Blocked: forbidden imports" in test_summary:
+            import re as _re
+            missing_mods = _re.findall(r"No module named ['\"](\w+)['\"]", test_stderr)
+            plan_files = (state.get("plan") or {}).get("files_needed", [])
+            plan_dirs = {Path(p).parts[0] for p in plan_files if "/" in p}
+            for mod in missing_mods:
+                mod_dir = workspace / mod
+                if mod_dir.is_dir() and any(mod_dir.glob("*.py")):
+                    init_file = mod_dir / "__init__.py"
+                    if not init_file.exists():
+                        init_file.write_text("", encoding="utf-8")
+                        feedback_parts.append(f"ENV FIX: Created {mod}/__init__.py (missing package init)")
+                elif mod in plan_dirs:
+                    mod_dir.mkdir(exist_ok=True)
+                    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
+                    feedback_parts.append(f"ENV FIX: Created {mod}/__init__.py for package directory")
 
         return {
             "feedback": "\n".join(feedback_parts),
