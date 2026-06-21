@@ -239,6 +239,9 @@ def _normalize_root_cause(root_cause: str) -> str:
           "importerror"], "import_error"),
         (["syntaxerror", "syntax error", "unterminated string",
           "unexpected eof", "invalid syntax"], "syntax_error"),
+        (["unexpected keyword argument", "got an unexpected keyword",
+          "unexpected argument", "missing required argument",
+          "takes no arguments"], "argument_mismatch"),
     ]
     for patterns, canonical in synonyms:
         if any(p in text for p in patterns):

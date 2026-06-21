@@ -195,6 +195,26 @@ def diagnose_traceback(
             confident=True,
         )
 
+    # ── TypeError: unexpected keyword argument ─────────────────
+    m = re.search(
+        r"TypeError: (\w[\w.]*)\(\) got an unexpected keyword argument ['\"](\w+)['\"]",
+        text,
+    )
+    if m:
+        func_name, bad_kwarg = m.group(1), m.group(2)
+        return Diagnosis(
+            culprit="developer",
+            error_type="argument",
+            message=(
+                f"{func_name}() does not accept keyword argument '{bad_kwarg}'. "
+                f"The call site passes '{bad_kwarg}=' but the method definition uses a "
+                f"DIFFERENT parameter name. Open the class definition, find what the "
+                f"parameter is ACTUALLY named, and update ALL call sites to match. "
+                f"Do NOT rename the parameter — rename the keyword at the CALL SITE."
+            ),
+            confident=True,
+        )
+
     # ── TypeError ──────────────────────────────────────────────
     m = re.search(r"TypeError: (.+)", text)
     if m:

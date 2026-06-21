@@ -21,6 +21,7 @@ from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, dia
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
 from autodev.import_fixer import fix_imports
+from autodev.kwarg_fixer import fix_kwarg_mismatches
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
 from autodev.syntax_fixer import fix_syntax
@@ -52,6 +53,11 @@ def _auto_fix_code(workspace: Path) -> None:
             if after_imports != fixed:
                 fixed = after_imports
                 print(f"[IMPORT-FIX] Auto-fixed imports in {py_file.name}", flush=True)
+
+            after_kwargs = fix_kwarg_mismatches(fixed)
+            if after_kwargs != fixed:
+                fixed = after_kwargs
+                print(f"[KWARG-FIX] Auto-fixed keyword arguments in {py_file.name}", flush=True)
 
             if fixed != source:
                 py_file.write_text(fixed, encoding="utf-8")
@@ -332,6 +338,22 @@ def build_graph(
                 "⚠️ ANTI-PATTERN DETECTED: Wrong output capture.\n"
                 "Use io.StringIO + contextlib.redirect_stdout, NOT sys.stdout.getvalue().\n"
                 "Pattern: f = io.StringIO(); with contextlib.redirect_stdout(f): func(); output = f.getvalue()"
+            )
+
+        import re as _re
+        kwarg_match = _re.search(
+            r"unexpected keyword argument ['\"](\w+)['\"]", combined_error
+        )
+        if kwarg_match:
+            bad_kwarg = kwarg_match.group(1)
+            feedback_parts.append(
+                f"⚠️ ANTI-PATTERN DETECTED: Keyword argument mismatch.\n"
+                f"The code passes '{bad_kwarg}=' but the method expects a DIFFERENT "
+                f"parameter name. MANDATORY FIX:\n"
+                f"1. Find the class __init__ or method definition\n"
+                f"2. Check what the parameter is ACTUALLY named\n"
+                f"3. Update ALL call sites to use the CORRECT name\n"
+                f"4. Do NOT add '{bad_kwarg}' as a new parameter — use the existing name"
             )
 
         error_ctx = state.get("error_graph_context", "")

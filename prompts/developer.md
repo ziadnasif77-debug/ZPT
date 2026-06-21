@@ -60,6 +60,13 @@ If you receive feedback from previous failed attempts, you MUST:
   ```
 - Each test creates a FRESH instance: `manager = TaskManager('test_1.json')` — no shared state between tests
 
+## Argument Consistency (CRITICAL — #2 cause of failures)
+- When calling a method, the keyword argument names MUST EXACTLY match the parameter names in the method definition
+- Example — if `__init__(self, description, priority)` → call with `Task(description="...", priority="...")`
+- WRONG: `Task(title="...")` when `__init__` expects `description` — this causes `TypeError: unexpected keyword argument`
+- Before writing any method call, VERIFY the parameter names match the target method's definition
+- Use the SAME name everywhere: if the plan says "description", use "description" in the class, methods, AND calls
+
 ## Implementation Rules (CRITICAL)
 - When sorting by priority: HIGH comes first, then MEDIUM, then LOW. Use a priority map: `{'high': 1, 'medium': 2, 'low': 3}` for sorting (ascending order = highest priority first)
 - When reading JSON files: ALWAYS handle the case where the file does not exist OR is empty. Use `try/except` with `FileNotFoundError` and `json.JSONDecodeError`, returning an empty list/dict as default
