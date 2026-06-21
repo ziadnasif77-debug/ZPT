@@ -67,6 +67,13 @@ If you receive feedback from previous failed attempts, you MUST:
 - Before writing any method call, VERIFY the parameter names match the target method's definition
 - Use the SAME name everywhere: if the plan says "description", use "description" in the class, methods, AND calls
 
+## f-string Rules (CRITICAL)
+- When accessing dict/list inside f-string, use OPPOSITE quote types:
+  - Outer double quotes → inner single: `f"value: {d['key']}"`
+  - Outer single quotes → inner double: `f'value: {d["key"]}'`
+- NEVER mix same quote type: `f'value: {d['key']}'` causes SyntaxError
+- When in doubt, use double quotes for f-strings and single quotes for dict keys
+
 ## Implementation Rules (CRITICAL)
 - When sorting by priority: HIGH comes first, then MEDIUM, then LOW. Use a priority map: `{'high': 1, 'medium': 2, 'low': 3}` for sorting (ascending order = highest priority first)
 - When reading JSON files: ALWAYS handle the case where the file does not exist OR is empty. Use `try/except` with `FileNotFoundError` and `json.JSONDecodeError`, returning an empty list/dict as default

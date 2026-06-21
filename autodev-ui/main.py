@@ -543,6 +543,8 @@ async def _send_agent_update(ws: WebSocket, node: str, data: dict):
             "reason": jd.get("reason", ""),
             "strategy": jd.get("strategy", ""),
         }
+    elif node == "healer":
+        content = {"status": "healed"}
     elif node == "prepare_retry":
         content = {"iteration": data.get("iteration", 0)}
     elif node == "done":

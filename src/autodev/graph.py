@@ -15,16 +15,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from autodev.agents import architect, debugger, developer, judge, product_manager, reviewer, tester
+from autodev.code_healer import extract_test_failures, format_test_failures, heal_workspace
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
 from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, diagnose_traceback
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
-from autodev.import_fixer import fix_imports
-from autodev.kwarg_fixer import fix_kwarg_mismatches
 from autodev.schemas import AttemptRecord
 from autodev.state import AutodevState
-from autodev.syntax_fixer import fix_syntax
 
 if TYPE_CHECKING:
     from autodev.config import AppConfig
@@ -36,33 +34,15 @@ def _error_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _auto_fix_code(workspace: Path) -> None:
-    """Scan all .py files in workspace, fix syntax errors and missing imports."""
-    if not workspace.is_dir():
-        return
-    for py_file in workspace.glob("*.py"):
-        try:
-            source = py_file.read_text(encoding="utf-8")
-            fixed = source
-
-            fixed = fix_syntax(fixed)
-            if fixed != source:
-                print(f"[SYNTAX-FIX] Auto-fixed syntax in {py_file.name}", flush=True)
-
-            after_imports = fix_imports(fixed)
-            if after_imports != fixed:
-                fixed = after_imports
-                print(f"[IMPORT-FIX] Auto-fixed imports in {py_file.name}", flush=True)
-
-            after_kwargs = fix_kwarg_mismatches(fixed)
-            if after_kwargs != fixed:
-                fixed = after_kwargs
-                print(f"[KWARG-FIX] Auto-fixed keyword arguments in {py_file.name}", flush=True)
-
-            if fixed != source:
-                py_file.write_text(fixed, encoding="utf-8")
-        except Exception as exc:
-            print(f"[CODE-FIX] Error fixing {py_file.name}: {exc}", flush=True)
+def _run_healer(workspace: Path) -> dict[str, list[str]]:
+    """Run the deterministic code healer on all workspace files."""
+    report = heal_workspace(workspace)
+    for category, files in report.items():
+        if files and category != "compile_errors":
+            print(f"[HEALER-{category.upper()}] Fixed: {', '.join(files)}", flush=True)
+    for err in report.get("compile_errors", []):
+        print(f"[HEALER-COMPILE] {err}", flush=True)
+    return report
 
 
 def _read_py_files(workspace: Path) -> dict[str, str]:
@@ -159,8 +139,12 @@ def build_graph(
     # ── Developer ──────────────────────────────────────────────
     def developer_node(state: AutodevState) -> dict:
         result = developer.run(state, config, llm)
+        return result
+
+    # ── Healer (deterministic, zero LLM) ──────────────────────
+    def healer_node(state: AutodevState) -> dict:
         workspace = Path(state.get("workspace_path", "./workspace"))
-        _auto_fix_code(workspace)
+        report = _run_healer(workspace)
 
         if config.git.auto_commit:
             iteration = state.get("iteration", 0)
@@ -168,14 +152,18 @@ def build_graph(
             if sha:
                 print(f"[GIT] Committed attempt {iteration}: {sha[:8]}", flush=True)
 
-        return result
+        total_fixes = sum(len(v) for k, v in report.items() if k != "compile_errors")
+        if total_fixes > 0:
+            print(f"[HEALER] Applied {total_fixes} fix(es) before testing", flush=True)
+
+        return {}
 
     # ── Tester ─────────────────────────────────────────────────
     def tester_node(state: AutodevState) -> dict:
         tester_result = tester.run(state, config, llm)
 
         workspace = Path(state.get("workspace_path", "./workspace"))
-        _auto_fix_code(workspace)
+        _run_healer(workspace)
 
         preflight = _preflight_validate(workspace)
         if preflight is not None:
@@ -376,6 +364,13 @@ def build_graph(
                     )
 
             feedback_parts.append(f"Test FAILED (exit code {test_result.get('exit_code', -1)})")
+
+            # Pytest healer: extract exact failing assertions
+            test_failures = extract_test_failures(stderr, stdout)
+            if test_failures:
+                failure_report = format_test_failures(test_failures)
+                feedback_parts.append(failure_report)
+
             if stderr:
                 feedback_parts.append(f"stderr:\n{stderr[:1500]}")
             if stdout:
@@ -486,6 +481,7 @@ def build_graph(
     graph.add_node("architect", architect_node)
     graph.add_node("approval_gate", approval_gate)
     graph.add_node("developer", developer_node)
+    graph.add_node("healer", healer_node)
     graph.add_node("tester", tester_node)
     graph.add_node("debugger", debugger_node)
     graph.add_node("reviewer", reviewer_node)
@@ -498,7 +494,8 @@ def build_graph(
     graph.add_edge("product_manager", "architect")
     graph.add_edge("architect", "approval_gate")
     graph.add_conditional_edges("approval_gate", route_after_approval)
-    graph.add_edge("developer", "tester")
+    graph.add_edge("developer", "healer")
+    graph.add_edge("healer", "tester")
     graph.add_conditional_edges("tester", route_after_tester, {"reviewer": "reviewer", "debugger": "debugger"})
     graph.add_edge("debugger", "reviewer")
     graph.add_edge("reviewer", "judge")

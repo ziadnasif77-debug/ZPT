@@ -367,6 +367,7 @@ const AGENT_INFO = {
   architect:     { icon: "\u{1F9E0}", label: "Architect",  color: "cyan" },
   approval_gate: { icon: "⻾️", label: "Approval",   color: "yellow" },
   developer:     { icon: "\u{1F4BB}", label: "Developer",  color: "green" },
+  healer:        { icon: "\u{1FA79}", label: "Healer",     color: "cyan" },
   tester:        { icon: "\u{1F9EA}", label: "Tester",     color: "magenta" },
   debugger:      { icon: "\u{1F41B}", label: "Debugger",   color: "red" },
   reviewer:      { icon: "\u{1F50D}", label: "Reviewer",   color: "blue" },
@@ -694,7 +695,7 @@ function renderMessages(messages) {
       <h2>AutoDev Chat</h2>
       <p>Local AI dev team powered by Ollama. Describe what you want to build.</p>
       <div class="welcome-modes">
-        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 7-agent pipeline (PM &rarr; Architect &rarr; Developer &rarr; Tester &rarr; Debugger &rarr; Reviewer &rarr; Judge)</div>
+        <div class="welcome-mode"><strong>Agent Mode</strong> &mdash; 8-agent pipeline (PM &rarr; Architect &rarr; Developer &rarr; Healer &rarr; Tester &rarr; Debugger &rarr; Reviewer &rarr; Judge)</div>
         <div class="welcome-mode"><strong>Chat Mode</strong> &mdash; Direct conversation with Ollama</div>
       </div>
     </div>`;
