@@ -17,7 +17,7 @@ from langgraph.types import Command, interrupt
 from autodev.agents import architect, debugger, developer, judge, product_manager, reviewer, tester
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
-from autodev.diagnostics import check_api_mismatch, diagnose_traceback
+from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, diagnose_traceback
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
 from autodev.import_fixer import fix_imports
@@ -123,6 +123,7 @@ def build_graph(
 
     # ── Product Manager ───────────────────────────────────────
     def product_manager_node(state: AutodevState) -> dict:
+        error_graph.reset()
         return product_manager.run(state, config, llm)
 
     # ── Architect ──────────────────────────────────────────────
@@ -215,9 +216,11 @@ def build_graph(
 
         if diag.confident and diag.message:
             print(f"[DEBUGGER-DIAG] {diag.error_type} -> {diag.culprit}: {diag.message[:120]}", flush=True)
+            traceback_file = _last_file_in_traceback(stderr)
+            affected = [traceback_file] if traceback_file else []
             report = {
                 "root_cause": diag.message,
-                "affected_files": [diag.culprit],
+                "affected_files": affected,
                 "error_category": diag.error_type,
             }
         else:
