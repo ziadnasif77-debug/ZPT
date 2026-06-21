@@ -305,6 +305,16 @@ def build_graph(
     def developer_node(state: AutodevState) -> dict:
         workspace = Path(state.get("workspace_path", "./workspace"))
 
+        plan = state.get("plan") or {}
+        allowed_files = set(plan.get("files_needed", []))
+        allowed_files.add("test_runner.py")
+        iteration = state.get("iteration", 0)
+        if iteration == 0 and allowed_files and workspace.is_dir():
+            for py_file in list(workspace.glob("*.py")):
+                if py_file.name not in allowed_files:
+                    py_file.unlink()
+                    print(f"[SCOPE] Removed stale file: {py_file.name}", flush=True)
+
         # Package audit before code generation
         if config.packages.audit_before_run:
             audit = pkg_mgr.auto_resolve(workspace)

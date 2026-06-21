@@ -82,6 +82,12 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
         code_bundle = llm.chat(agent="developer", messages=messages, response_model=CodeBundle)
 
         files_data = [f.model_dump() for f in code_bundle.files]
+
+        allowed_files = set(plan.get("files_needed", []))
+        allowed_files.add("test_runner.py")
+        if allowed_files:
+            files_data = [f for f in files_data if f["path"] in allowed_files]
+
         modified = apply_code_preserving(workspace, files_data, is_retry or attempt > 1)
 
         total_lines = sum(len(f.content.splitlines()) for f in code_bundle.files)
