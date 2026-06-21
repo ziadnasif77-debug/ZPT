@@ -224,7 +224,31 @@ class ErrorGraph:
             print(f"[ERROR-GRAPH] Failed to load: {e}", flush=True)
 
 
+def _normalize_root_cause(root_cause: str) -> str:
+    """Normalize root cause text to catch semantically duplicate errors."""
+    text = root_cause.lower().strip()
+    text = text.replace("'", "").replace('"', "").replace("`", "")
+    synonyms = [
+        (["not defined", "not accessible", "undefined", "is not defined",
+          "not in scope", "not declared"], "not_defined"),
+        (["not being reset", "not reset", "shared state", "global state",
+          "persists between", "state leaks"], "state_not_reset"),
+        (["no attribute", "has no attribute", "attributeerror"], "no_attribute"),
+        (["index out of range", "indexerror", "list index"], "index_error"),
+        (["cannot import", "no module named", "modulenotfounderror",
+          "importerror"], "import_error"),
+        (["syntaxerror", "syntax error", "unterminated string",
+          "unexpected eof", "invalid syntax"], "syntax_error"),
+    ]
+    for patterns, canonical in synonyms:
+        if any(p in text for p in patterns):
+            return canonical
+    words = text.split()[:10]
+    return " ".join(words)
+
+
 def _error_signature(error_type: str, file: str, root_cause: str) -> str:
     """Create a stable signature for an error."""
-    key = f"{error_type}:{file}:{root_cause[:200]}"
+    normalized = _normalize_root_cause(root_cause)
+    key = f"{error_type}:{file}:{normalized}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]

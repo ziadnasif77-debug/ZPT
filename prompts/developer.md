@@ -20,6 +20,46 @@ If you receive feedback from previous failed attempts, you MUST:
 - Do not access the network, filesystem outside the working directory, or system resources
 - Every file MUST have all its imports at the top — never assume a name is available without importing it
 
+## State Management (CRITICAL — #1 cause of test failures)
+- NEVER use global mutable variables (`tasks = []` at module level). Tests cannot isolate state when it's global.
+- ALWAYS encapsulate state inside a CLASS. The class constructor initializes all mutable state.
+- Example — CORRECT pattern:
+  ```python
+  class TaskManager:
+      def __init__(self, filepath='tasks.json'):
+          self.filepath = filepath
+          self.tasks = []  # state lives INSIDE the instance
+      
+      def add_task(self, title, priority='medium'):
+          self.tasks.append({'title': title, 'priority': priority})
+          print('Task added')
+      
+      def sort_by_priority(self):
+          order = {'high': 1, 'medium': 2, 'low': 3}
+          self.tasks.sort(key=lambda t: order.get(t['priority'], 99))
+          print('Tasks sorted by priority')
+      
+      def save(self):
+          with open(self.filepath, 'w') as f:
+              json.dump(self.tasks, f)
+          print('Tasks saved to file')
+      
+      def load(self):
+          try:
+              with open(self.filepath, 'r') as f:
+                  self.tasks = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              self.tasks = []
+          print('Tasks loaded from file')
+  ```
+- Example — WRONG pattern (will fail tests):
+  ```python
+  tasks = []  # WRONG: global mutable state
+  def add_task(title, priority):
+      tasks.append(...)  # WRONG: modifies global
+  ```
+- Each test creates a FRESH instance: `manager = TaskManager('test_1.json')` — no shared state between tests
+
 ## Implementation Rules (CRITICAL)
 - When sorting by priority: HIGH comes first, then MEDIUM, then LOW. Use a priority map: `{'high': 1, 'medium': 2, 'low': 3}` for sorting (ascending order = highest priority first)
 - When reading JSON files: ALWAYS handle the case where the file does not exist OR is empty. Use `try/except` with `FileNotFoundError` and `json.JSONDecodeError`, returning an empty list/dict as default

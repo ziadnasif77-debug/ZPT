@@ -310,6 +310,30 @@ def build_graph(
             if debug_report.get("affected_files"):
                 feedback_parts.append(f"AFFECTED FILES: {', '.join(debug_report['affected_files'])}")
 
+        stderr = test_result.get("stderr", "").lower()
+        root_cause = (debug_report.get("root_cause") or "").lower()
+        combined_error = stderr + " " + root_cause
+        if any(p in combined_error for p in [
+            "not defined", "not accessible", "global", "not being reset",
+            "shared state", "state leak", "list index out of range",
+        ]):
+            feedback_parts.append(
+                "⚠️ ANTI-PATTERN DETECTED: Global mutable state.\n"
+                "MANDATORY FIX: Wrap ALL state inside a CLASS.\n"
+                "- Replace `tasks = []` at module level with `self.tasks = []` in __init__\n"
+                "- ALL functions that access state must be CLASS METHODS using self.\n"
+                "- Tests must create FRESH instances: `mgr = TaskManager()` per test\n"
+                "- Do NOT use global variables for any mutable data."
+            )
+        if any(p in combined_error for p in [
+            "getvalue", "textiowrapper", "has no attribute",
+        ]):
+            feedback_parts.append(
+                "⚠️ ANTI-PATTERN DETECTED: Wrong output capture.\n"
+                "Use io.StringIO + contextlib.redirect_stdout, NOT sys.stdout.getvalue().\n"
+                "Pattern: f = io.StringIO(); with contextlib.redirect_stdout(f): func(); output = f.getvalue()"
+            )
+
         error_ctx = state.get("error_graph_context", "")
         if error_ctx:
             feedback_parts.append(error_ctx)
