@@ -247,17 +247,20 @@ class SurgicalPatcher:
         method_name = gap.element_name
         params = ["self"]
 
+        inferred_names = _infer_params_from_name(method_name)
+
         if gap.call_args:
             for i, _ in enumerate(gap.call_args):
-                params.append(f"arg{i + 1}")
+                if i < len(inferred_names):
+                    params.append(inferred_names[i])
+                else:
+                    params.append(f"arg{i + 1}")
+        elif not gap.call_kwargs:
+            params.extend(inferred_names)
 
         if gap.call_kwargs:
             for kw in gap.call_kwargs:
                 params.append(f"{kw}=None")
-
-        if len(params) == 1 and not gap.call_args and not gap.call_kwargs:
-            sig = _infer_params_from_name(method_name)
-            params.extend(sig)
 
         param_str = ", ".join(params)
         body = _infer_body_from_name(method_name, cmap)

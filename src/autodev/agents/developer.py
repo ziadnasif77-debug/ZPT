@@ -218,6 +218,9 @@ def _self_review(workspace: Path, code_bundle: CodeBundle) -> list[dict]:
         except Exception:
             continue
 
+        # Run text-based checks first (work even on broken code)
+        _check_fstring_quotes(py_file.name, source, issues)
+
         # 1. AST parse check
         try:
             tree = ast.parse(source)
@@ -229,13 +232,11 @@ def _self_review(workspace: Path, code_bundle: CodeBundle) -> list[dict]:
                 "description": f"{py_file.name}:{e.lineno}: SyntaxError: {e.msg}",
                 "auto_fixable": True,
             })
+            _check_missing_imports_regex(py_file.name, source, issues)
             continue
 
         # 2. Check all names are imported
         _check_undefined_names(py_file.name, source, tree, issues)
-
-        # 3. f-string quote consistency
-        _check_fstring_quotes(py_file.name, source, issues)
 
         # 4. Collect class methods for cross-file checking
         for node in ast.walk(tree):
@@ -323,24 +324,66 @@ def _check_undefined_names(filename: str, source: str, tree: ast.AST, issues: li
 
 
 def _check_fstring_quotes(filename: str, source: str, issues: list[dict]):
-    """Check for f-string quote conflicts."""
+    """Check for f-string quote conflicts inside f-string expressions."""
     import re
     for i, line in enumerate(source.splitlines(), 1):
-        if "f'" in line and "['" in line and "}" in line:
+        stripped = line.lstrip()
+        for prefix in ("f'", "f\"", "F'", "F\""):
+            if prefix not in stripped:
+                continue
+            outer_quote = prefix[-1]
+            idx = stripped.index(prefix) + len(prefix)
+            depth = 0
+            in_expr = False
+            expr_chars: list[str] = []
+            for ch in stripped[idx:]:
+                if ch == '{':
+                    depth += 1
+                    in_expr = True
+                    expr_chars = []
+                elif ch == '}' and depth > 0:
+                    depth -= 1
+                    if depth == 0:
+                        expr_text = ''.join(expr_chars)
+                        if outer_quote in expr_text:
+                            issues.append({
+                                "file": filename,
+                                "line": i,
+                                "type": "fstring",
+                                "description": (
+                                    f"{filename}:{i}: f-string quote conflict "
+                                    f"({outer_quote}-quoted f-string uses "
+                                    f"{outer_quote} inside expression)"
+                                ),
+                                "auto_fixable": True,
+                            })
+                            break
+                        in_expr = False
+                elif in_expr:
+                    expr_chars.append(ch)
+            break
+
+
+def _check_missing_imports_regex(filename: str, source: str, issues: list[dict]):
+    """Fallback import check using regex when AST parse fails."""
+    import re
+    from autodev.import_fixer import _KNOWN_IMPORTS
+
+    imported = set()
+    for m in re.finditer(r'^\s*(?:from\s+(\S+)\s+)?import\s+(.+)', source, re.MULTILINE):
+        if m.group(1):
+            imported.add(m.group(1).split('.')[0])
+        for name in m.group(2).split(','):
+            imported.add(name.strip().split(' as ')[0].split('.')[0])
+
+    for name in _KNOWN_IMPORTS:
+        if re.search(r'\b' + re.escape(name) + r'\b', source) and name not in imported:
             issues.append({
                 "file": filename,
-                "line": i,
-                "type": "fstring",
-                "description": f"{filename}:{i}: f-string quote conflict (single-quoted f-string with ['key'])",
+                "type": "missing_import",
+                "description": f"{filename}: missing import for '{name}'",
                 "auto_fixable": True,
-            })
-        elif 'f"' in line and '["' in line and "}" in line:
-            issues.append({
-                "file": filename,
-                "line": i,
-                "type": "fstring",
-                "description": f'{filename}:{i}: f-string quote conflict (double-quoted f-string with ["key"])',
-                "auto_fixable": True,
+                "fix": _KNOWN_IMPORTS[name],
             })
 
 
@@ -656,10 +699,19 @@ def heal_until_passing(
                 ErrorCategory.MISSING_ATTRIBUTE,
                 ErrorCategory.MISSING_CLASS,
             ):
-                gaps = _gaps_from_error(error, pmap)
+                candidate_gaps = _gaps_from_error(error, pmap)
+                gaps = _filter_already_resolved(candidate_gaps, pmap)
 
             if gaps:
+                new_patches_this_round = 0
                 for gap in gaps:
+                    if _gap_already_resolved(gap, pmap):
+                        logs.append(
+                            f"[HEAL-{attempt}] Skip: {gap.element_name} "
+                            f"already exists in {gap.should_be_in}"
+                        )
+                        continue
+
                     logs.append(
                         f"[HEAL-{attempt}] Gap: {gap.element_name} "
                         f"missing in {gap.should_be_in}"
@@ -670,26 +722,33 @@ def heal_until_passing(
                     if result.success:
                         patches_applied.append(result.description)
                         logs.append(f"[HEAL-{attempt}] Patched: {result.description}")
+                        new_patches_this_round += 1
                     else:
                         logs.append(
                             f"[HEAL-{attempt}] Patch failed: {result.error}"
                         )
+
+                if new_patches_this_round == 0:
+                    logs.append(f"[HEAL-{attempt}] All gaps already resolved — done")
+                    break
+
+                verify_map = mapper.map_workspace(workspace)
+                remaining = [g for g in gaps if not _gap_already_resolved(g, verify_map)]
+                if not remaining:
+                    logs.append(f"[HEAL-{attempt}] All gaps resolved after patching")
+                    break
+
             elif category == ErrorCategory.MISSING_IMPORT:
                 heal_workspace(workspace)
                 logs.append(f"[HEAL-{attempt}] Applied import healer")
                 patches_applied.append(f"import fix for {error.missing_element}")
+                break
             elif category == ErrorCategory.WRONG_LOGIC:
                 logs.append(f"[HEAL-{attempt}] Logic error — needs LLM")
                 break
             else:
                 heal_workspace(workspace)
                 logs.append(f"[HEAL-{attempt}] Applied general healer")
-
-            if not gaps and category not in (
-                ErrorCategory.MISSING_IMPORT,
-                ErrorCategory.SYNTAX_ERROR,
-            ):
-                logs.append(f"[HEAL-{attempt}] No structural gaps found — escalating")
                 break
 
     finally:
@@ -702,6 +761,36 @@ def heal_until_passing(
         "logs": logs,
         "attempts": min(attempt, max_attempts) if 'attempt' in dir() else 0,
     }
+
+
+def _gap_already_resolved(gap, pmap) -> bool:
+    """Check if a gap has already been resolved in the current workspace state."""
+    fmap = pmap.files.get(gap.should_be_in)
+    if not fmap:
+        return False
+
+    if gap.gap_type == "missing_method":
+        cmap = fmap.classes.get(gap.class_name)
+        if cmap and gap.element_name in cmap.methods:
+            return True
+    elif gap.gap_type == "missing_class":
+        if gap.class_name in fmap.classes:
+            return True
+    elif gap.gap_type == "missing_attribute":
+        cmap = fmap.classes.get(gap.class_name)
+        if cmap and gap.element_name in cmap.attributes:
+            return True
+    elif gap.gap_type == "missing_export":
+        all_names = set(fmap.classes.keys()) | set(fmap.functions) | set(fmap.top_level_names)
+        if gap.element_name in all_names:
+            return True
+
+    return False
+
+
+def _filter_already_resolved(gaps: list, pmap) -> list:
+    """Remove gaps that are already resolved in the workspace."""
+    return [g for g in gaps if not _gap_already_resolved(g, pmap)]
 
 
 def _gaps_from_error(error, pmap) -> list:

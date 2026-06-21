@@ -54,6 +54,7 @@ class ProjectMap:
 class ProjectMapper:
     def map_workspace(self, workspace: Path) -> ProjectMap:
         pmap = ProjectMap()
+        pmap._workspace = workspace
 
         if not workspace.is_dir():
             return pmap
@@ -237,9 +238,10 @@ class ProjectMapper:
             return []
 
         results: list[tuple[str, str, list[str], list[str], int]] = []
+        workspace = getattr(pmap, '_workspace', Path("."))
 
         try:
-            source = (Path(".") / test_filename).read_text(encoding="utf-8")
+            source = (workspace / test_filename).read_text(encoding="utf-8")
         except Exception:
             return results
 
@@ -279,8 +281,9 @@ class ProjectMapper:
         results: list[tuple[str, str, int]] = []
         local_modules = {f.replace(".py", "") for f in pmap.files if not f.startswith("test")}
 
+        workspace = getattr(pmap, '_workspace', Path("."))
         try:
-            source = (Path(".") / test_filename).read_text(encoding="utf-8")
+            source = (workspace / test_filename).read_text(encoding="utf-8")
             tree = ast.parse(source)
         except Exception:
             return results
