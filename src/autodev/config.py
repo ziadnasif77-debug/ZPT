@@ -48,7 +48,7 @@ class SandboxConfig(BaseModel):
 
 
 class LoopConfig(BaseModel):
-    max_iterations: int = 5
+    max_iterations: int = 15
     stop_if_no_progress: bool = True
     pass_full_attempt_history: bool = True
 

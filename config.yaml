@@ -33,7 +33,7 @@ sandbox:
   workspace_mount_readonly: false
 
 loop:
-  max_iterations: 5
+  max_iterations: 15
   stop_if_no_progress: true
   pass_full_attempt_history: true
 

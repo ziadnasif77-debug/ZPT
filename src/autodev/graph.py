@@ -20,7 +20,7 @@ from autodev.agents import architect, debugger, developer, judge, product_manage
 from autodev.code_healer import extract_test_failures, format_test_failures, heal_workspace
 from autodev.context_manager import ContextManager
 from autodev.deps import audit_dependencies, check_imports, pip_install_command, resolve_packages, scan_workspace
-from autodev.diagnostics import _last_file_in_traceback, check_api_mismatch, diagnose_traceback
+from autodev.diagnostics import _file_owner, _last_file_in_traceback, check_api_mismatch, diagnose_traceback
 from autodev.error_graph import ErrorGraph
 from autodev.git_manager import commit_snapshot, rollback_to_last_success, tag_success
 from autodev.package_manager import AutonomousPackageManager
@@ -41,7 +41,11 @@ if TYPE_CHECKING:
 
 
 def _error_hash(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    import re as _re
+    normalized = _re.sub(r'line \d+', 'line N', text)
+    normalized = _re.sub(r'0x[0-9a-f]+', '0xADDR', normalized)
+    normalized = _re.sub(r'\d+\.\d+s', 'N.Ns', normalized)
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
 def _run_healer(workspace: Path) -> dict[str, list[str]]:
@@ -464,7 +468,7 @@ def build_graph(
     def debugger_node(state: AutodevState) -> dict:
         test_result = state.get("test_result") or {}
         if test_result.get("passed", False):
-            return {"debug_report": {"root_cause": "N/A", "affected_files": [], "error_category": "none"}}
+            return {"debug_report": {"root_cause": "N/A", "affected_files": [], "error_category": "none", "culprit": "none"}}
 
         workspace = Path(state.get("workspace_path", "./workspace"))
         code_files = _read_py_files(workspace)
@@ -473,10 +477,11 @@ def build_graph(
 
         diag = diagnose_traceback(stderr, stdout, code_files)
 
+        traceback_file = _last_file_in_traceback(stderr)
+        affected = [traceback_file] if traceback_file else []
+
         if diag.confident and diag.message:
             print(f"[DEBUGGER-DIAG] {diag.error_type} -> {diag.culprit}: {diag.message[:120]}", flush=True)
-            traceback_file = _last_file_in_traceback(stderr)
-            affected = [traceback_file] if traceback_file else []
             report = {
                 "root_cause": diag.message,
                 "affected_files": affected,
@@ -484,8 +489,15 @@ def build_graph(
                 "culprit": diag.culprit,
             }
         else:
-            result = debugger.run(state, config, llm)
-            report = result.get("debug_report", {})
+            culprit = diag.culprit if diag.culprit != "unknown" else _file_owner(traceback_file)
+            raw_error = stderr.strip().split("\n")[-1] if stderr.strip() else "Unknown error"
+            report = {
+                "root_cause": f"Error in {traceback_file or 'unknown file'}: {raw_error}",
+                "affected_files": affected,
+                "error_category": diag.error_type or "runtime",
+                "culprit": culprit,
+            }
+            print(f"[DEBUGGER-FALLBACK] {report['error_category']} -> {culprit}: {raw_error[:120]}", flush=True)
 
         iteration = state.get("iteration", 0)
         if config.error_graph.enabled:
@@ -503,6 +515,26 @@ def build_graph(
 
     # ── Reviewer ───────────────────────────────────────────────
     def reviewer_node(state: AutodevState) -> dict:
+        test_result = state.get("test_result") or {}
+        debug_report = state.get("debug_report") or {}
+
+        if not test_result.get("passed", False):
+            culprit = debug_report.get("culprit", "developer")
+            root_cause = debug_report.get("root_cause", "Unknown")
+            affected = debug_report.get("affected_files", [])
+            return {
+                "review": {
+                    "approved": False,
+                    "comments": [{
+                        "file_path": affected[0] if affected else "unknown",
+                        "line": 0,
+                        "severity": "error",
+                        "message": root_cause,
+                    }],
+                    "summary": f"Tests FAILED. {root_cause}. Error is in: {culprit}.",
+                }
+            }
+
         return reviewer.run(state, config, llm)
 
     # ── Judge ──────────────────────────────────────────────────
@@ -550,6 +582,18 @@ def build_graph(
                                 "strategy": "Try a completely different implementation approach",
                             },
                         }
+
+        if not test_result.get("passed", False):
+            culprit = debug_report.get("culprit", "developer")
+            root_cause = debug_report.get("root_cause", "")
+            strategy = f"Fix the {debug_report.get('error_category', 'error')} in {culprit}'s code: {root_cause[:200]}"
+            return {
+                "judge_decision": {
+                    "decision": "REJECT",
+                    "reason": root_cause[:300],
+                    "strategy": strategy,
+                },
+            }
 
         result = judge.run(state, config, llm)
         return result
@@ -817,7 +861,9 @@ def build_graph(
             review_data = state.get("review") or {}
             error_text = test_result.get("stderr", "") + review_data.get("summary", "")
             eh = _error_hash(error_text)
-            if eh in state.get("error_hashes", []):
+            prev_hashes = state.get("error_hashes", [])
+            consecutive_same = sum(1 for h in prev_hashes[-3:] if h == eh)
+            if consecutive_same >= 3:
                 return "failed"
 
         return "retry"

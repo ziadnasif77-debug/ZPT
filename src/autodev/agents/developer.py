@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 _PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "developer.md"
 
-MAX_INNER_ITERATIONS = 5
+MAX_INNER_ITERATIONS = 8
 
 _FSTRING_CHECKLIST = [
     ("ast_parse", "AST parse — zero syntax errors"),
