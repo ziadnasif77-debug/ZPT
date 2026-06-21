@@ -172,8 +172,14 @@ def _preflight_validate(workspace: Path) -> dict | None:
                 "duration_seconds": 0.0,
             }
 
-    test_source = files.get("test_runner.py", "")
-    code_files = {n: s for n, s in files.items() if n != "test_runner.py"}
+    test_source = ""
+    test_name = "test_runner.py"
+    for fname in files:
+        if fname == "test_runner.py" or fname.startswith("test_"):
+            test_source = files[fname]
+            test_name = fname
+            break
+    code_files = {n: s for n, s in files.items() if n != test_name}
     if test_source and code_files:
         mismatches = check_api_mismatch(code_files, test_source)
         if mismatches:
@@ -306,12 +312,13 @@ def build_graph(
         workspace = Path(state.get("workspace_path", "./workspace"))
 
         plan = state.get("plan") or {}
-        allowed_files = set(plan.get("files_needed", []))
-        allowed_files.add("test_runner.py")
+        plan_files = plan.get("files_needed", [])
         iteration = state.get("iteration", 0)
-        if iteration == 0 and allowed_files and workspace.is_dir():
+        if iteration == 0 and plan_files and workspace.is_dir():
+            allowed_basenames = {Path(p).name for p in plan_files}
+            allowed_basenames.add("test_runner.py")
             for py_file in list(workspace.glob("*.py")):
-                if py_file.name not in allowed_files:
+                if py_file.name not in allowed_basenames:
                     py_file.unlink()
                     print(f"[SCOPE] Removed stale file: {py_file.name}", flush=True)
 
@@ -367,6 +374,14 @@ def build_graph(
         tester_result = tester.run(state, config, llm)
 
         workspace = Path(state.get("workspace_path", "./workspace"))
+
+        test_file = "test_runner.py"
+        for candidate in workspace.glob("test_*.py"):
+            test_file = candidate.name
+            break
+        if (workspace / "test_runner.py").exists():
+            test_file = "test_runner.py"
+
         _run_healer(workspace)
 
         preflight = _preflight_validate(workspace)
@@ -417,7 +432,7 @@ def build_graph(
 
         sandbox_result = sandbox.run(
             workspace=workspace,
-            command="python test_runner.py",
+            command=f"python {test_file}",
             extra_setup=setup_cmd,
         )
         return {"test_result": sandbox_result.model_dump()}
@@ -443,6 +458,7 @@ def build_graph(
                 "root_cause": diag.message,
                 "affected_files": affected,
                 "error_category": diag.error_type,
+                "culprit": diag.culprit,
             }
         else:
             result = debugger.run(state, config, llm)
@@ -644,11 +660,18 @@ def build_graph(
             error_hash=eh,
         )
 
+        retry_target = "developer"
+        diag_culprit = debug_report.get("culprit", "")
+        test_summary = test_result.get("test_summary", "")
+        if diag_culprit == "tester" or "pre-flight: syntax" in test_summary:
+            retry_target = "tester"
+
         return {
             "feedback": "\n".join(feedback_parts),
             "iteration": iteration + 1,
             "error_hashes": [eh],
             "attempt_history": [attempt.model_dump()],
+            "retry_target": retry_target,
         }
 
     # ── Memory Save (after ACCEPT) ────────────────────────────
@@ -788,7 +811,16 @@ def build_graph(
         route_after_judge,
         {"done": "memory_save", "failed": "failed", "retry": "prepare_retry"},
     )
-    graph.add_edge("prepare_retry", "developer")
+    def route_after_retry(state: AutodevState) -> str:
+        if state.get("retry_target") == "tester":
+            return "tester"
+        return "developer"
+
+    graph.add_conditional_edges(
+        "prepare_retry",
+        route_after_retry,
+        {"developer": "developer", "tester": "tester"},
+    )
     graph.add_edge("memory_save", "done")
     graph.add_edge("done", END)
     graph.add_edge("failed", END)

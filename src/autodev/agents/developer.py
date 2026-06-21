@@ -83,15 +83,21 @@ def run(state: "AutodevState", config: "AppConfig", llm: "LLMClient") -> dict:
 
         files_data = [f.model_dump() for f in code_bundle.files]
 
-        allowed_files = set(plan.get("files_needed", []))
-        allowed_files.add("test_runner.py")
-        if allowed_files:
-            files_data = [f for f in files_data if f["path"] in allowed_files]
+        plan_files = plan.get("files_needed", [])
+        if plan_files:
+            allowed_basenames = {Path(p).name for p in plan_files}
+            allowed_full = set(plan_files)
+            allowed_full.add("test_runner.py")
+            allowed_basenames.add("test_runner.py")
+            files_data = [
+                f for f in files_data
+                if f["path"] in allowed_full or Path(f["path"]).name in allowed_basenames
+            ]
 
         modified = apply_code_preserving(workspace, files_data, is_retry or attempt > 1)
 
-        total_lines = sum(len(f.content.splitlines()) for f in code_bundle.files)
-        inner_logs.append(f"[INNER-{attempt}] Generated {len(code_bundle.files)} file(s) ({total_lines} lines)")
+        total_lines = sum(len(f.get("content", "").splitlines()) for f in files_data)
+        inner_logs.append(f"[INNER-{attempt}] Generated {len(files_data)} file(s) ({total_lines} lines)")
 
         issues = _self_review(workspace, code_bundle)
 

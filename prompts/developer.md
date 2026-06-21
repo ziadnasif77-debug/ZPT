@@ -83,7 +83,10 @@ If you need type hints, use `typing` module.
 - Before writing any method call, VERIFY the parameter names match the target method's definition
 - Use the SAME name everywhere: if the plan says "description", use "description" in the class, methods, AND calls
 
-## f-string Rules (CRITICAL)
+## String Rules (CRITICAL)
+- For multi-line strings, ALWAYS use triple quotes (`'''` or `"""`). NEVER put a newline inside single quotes — it causes `SyntaxError: unterminated string literal`
+  - WRONG: `code = 'def foo():\n    return 1'` with a literal newline
+  - CORRECT: `code = '''def foo():\n    return 1'''` or use `\n` escape in single-line string
 - When accessing dict/list inside f-string, use OPPOSITE quote types:
   - Outer double quotes → inner single: `f"value: {d['key']}"`
   - Outer single quotes → inner double: `f'value: {d["key"]}'`

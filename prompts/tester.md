@@ -70,6 +70,13 @@ def test_divide_by_zero():
 - The test script MUST include ALL necessary imports at the top of the file
 - Every name you use (datetime, Enum, json, etc.) MUST be explicitly imported
 
+## String Rules (CRITICAL)
+- For multi-line strings (especially when embedding code as test data), ALWAYS use triple quotes (`'''` or `"""`)
+- NEVER put a literal newline inside single quotes — it causes `SyntaxError: unterminated string literal`
+- WRONG: `code = 'def foo():\n    return 1'` with an actual line break between the quotes
+- CORRECT: `code = '''def foo():\n    return 1'''`
+- CORRECT: `code = "def foo():\\n    return 1"` (escaped newline in single-line string)
+
 ## CRITICAL: This is a plain Python script, NOT pytest
 - This script runs with `python test_runner.py`, NOT with pytest
 - NEVER use pytest fixtures like `capsys`, `tmp_path`, `monkeypatch`, `fixture`, etc.

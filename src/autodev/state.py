@@ -31,6 +31,7 @@ class AutodevState(TypedDict, total=False):
     inner_iterations: int
     package_report: dict | None
 
+    retry_target: str
     final_status: str
     stop_reason: str
     feedback: str
